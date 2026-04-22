@@ -52,6 +52,7 @@ const navigateState = vi.hoisted(() => ({
 
 vi.mock("@/lib/router", () => ({
   useNavigate: () => navigateState.navigate,
+  useLocation: () => ({ pathname: "/", search: "", hash: "" }),
 }));
 
 vi.mock("../api/issues", () => ({
