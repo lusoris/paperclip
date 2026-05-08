@@ -65,7 +65,13 @@ export async function applyCiliumNetworkPolicy(client: KubernetesApiClient, p: C
     await client.request("GET", itemPath);
     await client.request("PUT", itemPath, p);
   } catch (err: unknown) {
-    if (/\b404\b/.test(String(err))) {
+    const is404 =
+      /\b404\b/.test(String(err)) ||
+      (typeof err === "object" && err !== null && (err as Record<string, unknown>)["statusCode"] === 404) ||
+      (typeof err === "object" && err !== null &&
+        typeof (err as Record<string, unknown>)["response"] === "object" &&
+        ((err as Record<string, unknown>)["response"] as Record<string, unknown>)?.["statusCode"] === 404);
+    if (is404) {
       await client.request("POST", collectionPath, p);
       return;
     }
