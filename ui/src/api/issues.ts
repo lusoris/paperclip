@@ -13,7 +13,6 @@ import type {
   IssueDocument,
   IssueLabel,
   IssueRecoveryAction,
-  IssueRecoveryActionOutcome,
   IssueRetryNowResponse,
   IssueThreadInteraction,
   IssueTreeControlPreview,
@@ -105,7 +104,7 @@ export const issuesApi = {
     id: string,
     data: {
       actionId?: string;
-      outcome: IssueRecoveryActionOutcome;
+      outcome: "restored" | "false_positive" | "blocked" | "cancelled";
       sourceIssueStatus?: "done" | "in_review" | "blocked";
       resolutionNote?: string | null;
     },

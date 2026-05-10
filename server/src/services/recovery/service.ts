@@ -1910,7 +1910,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryCause,
     });
 
-    if (recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
+    if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
       const [currentIssue] = await db
         .select({
           status: issues.status,
@@ -1922,12 +1922,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (
         currentIssue &&
         (currentIssue.status !== "blocked" ||
-          currentIssue.assigneeAgentId !== (recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId))
+          currentIssue.assigneeAgentId !== recoveryAction.ownerAgentId)
       ) {
         const reblocked = await issuesSvc.update(input.issue.id, {
           status: "blocked",
           blockedByIssueIds: blockerIds,
-          assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
+          assigneeAgentId: recoveryAction.ownerAgentId,
         });
         if (reblocked) return reblocked;
       }

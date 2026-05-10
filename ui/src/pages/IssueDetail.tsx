@@ -148,7 +148,6 @@ import {
   type Issue,
   type IssueAttachment,
   type IssueComment,
-  type IssueRecoveryActionOutcome,
   type IssueWorkMode,
   type IssueThreadInteraction,
   type RequestConfirmationInteraction,
@@ -158,6 +157,7 @@ import {
 
 type CommentReassignment = IssueCommentReassignment;
 type ActionableIssueThreadInteraction = SuggestTasksInteraction | RequestConfirmationInteraction;
+type ResolveRecoveryActionOutcome = "restored" | "false_positive" | "blocked" | "cancelled";
 type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   runId?: string | null;
   runAgentId?: string | null;
@@ -1744,7 +1744,7 @@ export function IssueDetail() {
   const resolveRecoveryAction = useMutation({
     mutationFn: (data: {
       actionId?: string;
-      outcome: IssueRecoveryActionOutcome;
+      outcome: ResolveRecoveryActionOutcome;
       sourceIssueStatus?: "done" | "in_review" | "blocked";
       resolutionNote?: string | null;
     }) => issuesApi.resolveRecoveryAction(issueId!, data),
