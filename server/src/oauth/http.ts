@@ -12,9 +12,33 @@ export interface ExchangeTokenInput {
   clientSecret: string;
 }
 
-export interface ExchangeTokenError extends Error {
+export class OAuthRequestError extends Error {
   status: number;
+  body: string;
+  parsed: Record<string, unknown>;
   providerErrorCode?: string;
+
+  constructor(
+    message: string,
+    init: { status: number; body: string; parsed?: Record<string, unknown>; providerErrorCode?: string },
+  ) {
+    super(message);
+    this.name = "OAuthRequestError";
+    this.status = init.status;
+    this.body = init.body;
+    this.parsed = init.parsed ?? {};
+    this.providerErrorCode = init.providerErrorCode;
+  }
+}
+
+const SENSITIVE_KEYS = ["access_token", "refresh_token", "id_token", "code", "code_verifier", "client_secret"];
+
+function sanitizeErrorBody(text: string): string {
+  if (!text) return "";
+  const jsonRe = new RegExp(`("(?:${SENSITIVE_KEYS.join("|")})"\\s*:\\s*)"[^"]*"`, "g");
+  const formRe = new RegExp(`(${SENSITIVE_KEYS.join("|")})=([^&\\s]+)`, "g");
+  const sanitized = text.replace(jsonRe, '$1"[REDACTED]"').replace(formRe, "$1=[REDACTED]");
+  return sanitized.slice(0, 200);
 }
 
 export async function exchangeToken(input: ExchangeTokenInput): Promise<Record<string, unknown>> {
@@ -58,13 +82,24 @@ export async function exchangeToken(input: ExchangeTokenInput): Promise<Record<s
 
     const text = await res.text();
     let parsed: Record<string, unknown>;
+    let parseFailed = false;
     try {
       parsed = input.responseFormat === "json" ? JSON.parse(text) : Object.fromEntries(new URLSearchParams(text));
     } catch {
       parsed = {};
+      parseFailed = true;
     }
 
-    if (res.ok) return parsed;
+    if (res.ok) {
+      if (parseFailed) {
+        throw new OAuthRequestError("token endpoint returned unparseable body", {
+          status: res.status,
+          body: sanitizeErrorBody(text),
+          parsed: {},
+        });
+      }
+      return parsed;
+    }
 
     if (res.status >= 500 && attempt < RETRY_DELAYS_MS.length) {
       oauthLogger.warn({ status: res.status, attempt }, "token endpoint 5xx; retrying");
@@ -73,12 +108,18 @@ export async function exchangeToken(input: ExchangeTokenInput): Promise<Record<s
       continue;
     }
 
-    const err = new Error(
-      `token exchange failed: ${res.status} ${typeof parsed.error === "string" ? parsed.error : ""}`,
-    ) as ExchangeTokenError;
-    err.status = res.status;
-    err.providerErrorCode = typeof parsed.error === "string" ? parsed.error : undefined;
-    throw err;
+    const safeBody = sanitizeErrorBody(text);
+    const providerErrorCode = typeof parsed.error === "string" ? parsed.error : undefined;
+    const messageSuffix = providerErrorCode ?? safeBody;
+    throw new OAuthRequestError(
+      `token exchange failed: ${res.status}${messageSuffix ? ` ${messageSuffix}` : ""}`,
+      {
+        status: res.status,
+        body: safeBody,
+        parsed,
+        providerErrorCode,
+      },
+    );
   }
 }
 
@@ -96,7 +137,14 @@ export async function fetchAccountInfo(url: string, accessToken: string): Promis
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`account info fetch failed: ${res.status} ${text.slice(0, 200)}`);
+      const safeBody = sanitizeErrorBody(text);
+      throw new OAuthRequestError(
+        `account info fetch failed: ${res.status}${safeBody ? ` ${safeBody}` : ""}`,
+        {
+          status: res.status,
+          body: safeBody,
+        },
+      );
     }
     return await res.json();
   } finally {
