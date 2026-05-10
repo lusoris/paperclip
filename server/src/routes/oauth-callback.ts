@@ -15,12 +15,15 @@ export interface OAuthCallbackDeps {
   db: any;
   registry: ProviderRegistry;
   publicUrl: string;
-  // Narrow method bag — the callback only needs to upsert OAuth token secrets.
+  // Narrow method bag — the callback needs to upsert OAuth token secrets and
+  // (on account-mismatch rollback) remove freshly-written ones to avoid
+  // orphans referenced by no connection row.
   secretService: {
     upsertSecretByName: (
       companyId: string,
       input: { name: string; value: string },
     ) => Promise<{ id: string }>;
+    remove?: (secretId: string) => Promise<unknown>;
   };
 }
 
@@ -206,6 +209,24 @@ export function oauthCallbackRoute(deps: OAuthCallbackDeps): RequestHandler {
       : null;
     const finalScopes = parsedToken.scope ?? stateRow.scopesRequested ?? [];
 
+    // Track the secret IDs we just wrote so that, on ACCOUNT_MISMATCH, we
+    // can roll them back. Without this, a mismatched callback leaves
+    // orphaned encrypted access/refresh tokens that no connection row
+    // references — names matching `oauth:<provider>:<accountId>:access` /
+    // `:refresh`. The connection upsert runs in its own transaction below;
+    // those secret writes are NOT inside that transaction (they require
+    // their own DB writes for versions/encryption metadata via the
+    // secret-service factory bound to the outer db), so a transactional
+    // rollback alone cannot undo them.
+    //
+    // We use Option C from the design notes: connection writes stay in a
+    // single transaction; on rollback we explicitly `secretService.remove`
+    // any freshly-persisted secrets. Option B (passing `tx` through the
+    // secret service) is the cleaner long-term fix but requires a wider
+    // refactor of the secret-service factory.
+    const newSecretIds: string[] = [accessSecret.id];
+    if (refreshSecret) newSecretIds.push(refreshSecret.id);
+
     try {
       await deps.db.transaction(async (tx: any) => {
         const existing = await tx.query.oauthConnections.findFirst({
@@ -265,6 +286,24 @@ export function oauthCallbackRoute(deps: OAuthCallbackDeps): RequestHandler {
           .update(oauthAuthorizationStates)
           .set({ consumedAt: new Date() })
           .where(eq(oauthAuthorizationStates.id, stateRow.id));
+        // Roll back the secret writes that landed before mismatch was
+        // detected. `remove` is idempotent and best-effort — swallow
+        // failures so a secrets cleanup hiccup doesn't override the
+        // user-visible mismatch error redirect.
+        if (typeof deps.secretService.remove === "function") {
+          for (const secretId of newSecretIds) {
+            await deps.secretService.remove(secretId).catch((removeErr) => {
+              oauthLogger.warn(
+                {
+                  provider: providerId,
+                  secretId,
+                  err: { message: (removeErr as Error).message },
+                },
+                "failed to roll back orphan OAuth secret after account mismatch",
+              );
+            });
+          }
+        }
         return res.redirect(
           302,
           back(deps, stateRow.returnUrl, { oauth_error: "account_mismatch" }),
