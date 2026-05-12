@@ -1,11 +1,97 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { parse as parseYaml } from "yaml";
 import {
   OAuthProviderConfigSchema,
   type OAuthProviderConfig,
 } from "./provider-config.js";
 import { logger } from "../middleware/logger.js";
+
+type YamlContainer = Record<string, unknown> | unknown[];
+
+interface StackEntry {
+  indent: number;
+  value: YamlContainer;
+}
+
+function parseScalar(value: string): unknown {
+  if (value === "[]") return [];
+  if (value.startsWith("[") && value.endsWith("]")) {
+    const inner = value.slice(1, -1).trim();
+    if (!inner) return [];
+    return inner.split(",").map((item) => parseScalar(item.trim()));
+  }
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (/^-?\d+(\.\d+)?$/.test(value)) return Number(value);
+  return value;
+}
+
+function nextMeaningfulLine(lines: string[], start: number): string | undefined {
+  for (let i = start; i < lines.length; i += 1) {
+    const trimmed = lines[i]?.trim();
+    if (trimmed && !trimmed.startsWith("#")) return trimmed;
+  }
+  return undefined;
+}
+
+function parseProviderYaml(raw: string): Record<string, unknown> {
+  const root: Record<string, unknown> = {};
+  const stack: StackEntry[] = [{ indent: -1, value: root }];
+  const lines = raw.replace(/\r\n/g, "\n").split("\n");
+
+  lines.forEach((line, index) => {
+    if (!line.trim() || line.trimStart().startsWith("#")) return;
+    if (line.includes("\t")) {
+      throw new Error(`Tabs are not supported at line ${index + 1}`);
+    }
+
+    const indent = line.length - line.trimStart().length;
+    const content = line.trim();
+    while (stack.length > 1 && indent <= stack[stack.length - 1]!.indent) {
+      stack.pop();
+    }
+    const parent = stack[stack.length - 1]!.value;
+
+    if (content.startsWith("- ")) {
+      if (!Array.isArray(parent)) {
+        throw new Error(`Unexpected list item at line ${index + 1}`);
+      }
+      parent.push(parseScalar(content.slice(2).trim()));
+      return;
+    }
+
+    if (Array.isArray(parent)) {
+      throw new Error(`Unexpected mapping entry in list at line ${index + 1}`);
+    }
+
+    const separator = content.indexOf(":");
+    if (separator === -1) {
+      throw new Error(`Missing mapping separator at line ${index + 1}`);
+    }
+
+    const key = content.slice(0, separator).trim();
+    const rawValue = content.slice(separator + 1).trim();
+    if (!key) throw new Error(`Missing key at line ${index + 1}`);
+
+    if (rawValue) {
+      parent[key] = parseScalar(rawValue);
+      return;
+    }
+
+    const nextLine = nextMeaningfulLine(lines, index + 1);
+    const value: YamlContainer = nextLine?.startsWith("- ") ? [] : {};
+    parent[key] = value;
+    stack.push({ indent, value });
+  });
+
+  return root;
+}
 
 /**
  * Load and validate OAuth provider configs from every `*.yaml`/`*.yml` file in
@@ -36,7 +122,7 @@ export async function loadProviderConfigsFromDirectory(
     const raw = await readFile(fullPath, "utf8");
     let parsed: unknown;
     try {
-      parsed = parseYaml(raw);
+      parsed = parseProviderYaml(raw);
     } catch (err) {
       logger.error(
         { file: fullPath, err },
