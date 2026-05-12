@@ -18,19 +18,20 @@
  * without real DB or Kubernetes connectivity.
  */
 
+import type {
+  ClusterCapabilities,
+  KubernetesExecutionDriver as KubernetesDriver,
+  ResolvedClusterConnection,
+  TenantPolicy,
+} from "@paperclipai/execution-target-kubernetes";
+
 // ---------------------------------------------------------------------------
 // Dependency interfaces (mirroring the real service shapes without importing
 // from server sub-paths that don't exist in the package exports map)
 // ---------------------------------------------------------------------------
 
 export type ClusterKind = "in-cluster" | "kubeconfig";
-export type ClusterArch = "amd64" | "arm64";
-
-export interface ClusterCapabilities {
-  cilium: boolean;
-  storageClass: string;
-  architectures: ClusterArch[];
-}
+export type ClusterArch = ClusterCapabilities["architectures"][number];
 
 export interface ClusterConnectionRow {
   id: string;
@@ -45,10 +46,6 @@ export interface ClusterConnectionRow {
   allowAgentImageOverride: boolean;
   createdAt: Date;
   createdBy: string;
-}
-
-export interface ResolvedClusterConnection extends ClusterConnectionRow {
-  kubeconfigYaml?: string;
 }
 
 export interface CreateClusterConnectionInput {
@@ -72,13 +69,6 @@ export interface ClusterConnectionsService {
   resolve(id: string): Promise<ResolvedClusterConnection | null>;
 }
 
-export interface TenantPolicy {
-  quota: Record<string, string | number | undefined> | null;
-  limitRange: Record<string, unknown> | null;
-  additionalAllowFqdns: string[];
-  imageOverrides: Record<string, string> | null;
-}
-
 export interface TenantPolicyRow extends TenantPolicy {
   clusterConnectionId: string;
   companyId: string;
@@ -91,25 +81,6 @@ export interface ClusterTenantPoliciesService {
 export interface EnsureTenantResult {
   namespace: string;
   ciliumApplied: boolean;
-}
-
-export interface KubernetesDriver {
-  type: "kubernetes";
-  validateTarget(target: unknown): Promise<void>;
-  ensureTenant(input: {
-    clusterConnectionId: string;
-    company: { id: string; slug: string };
-    tenantPolicy: TenantPolicy | null;
-    driverServiceAccount: { name: string; namespace: string };
-    controlPlane: {
-      topology: "in-cluster" | "cross-cluster";
-      namespaceLabels: Record<string, string>;
-      podLabels: Record<string, string>;
-    };
-    adapterAllowFqdns: string[];
-    imagePullDockerConfigJson: string | null;
-  }): Promise<EnsureTenantResult>;
-  run(...args: unknown[]): unknown;
 }
 
 export interface CompaniesLookup {

@@ -40,7 +40,6 @@ function mocks(): ClusterCommandDeps {
     },
     tenantPolicies: {
       get: vi.fn(async () => null) as any,
-      upsert: vi.fn(async () => ({} as any)) as any,
     },
     driver: {
       type: "kubernetes" as const,
