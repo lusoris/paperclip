@@ -543,6 +543,24 @@ export function agentRoutes(
 
   async function assertCanCreateAgentsForCompany(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
+    const decide = (access as typeof access & { decide?: typeof access.decide }).decide;
+    if (typeof decide === "function") {
+      const decision = await decide({
+        actor: req.actor,
+        action: "agents:create",
+        resource: { type: "company", companyId },
+      });
+      if (!decision.allowed) {
+        throw forbidden(decision.explanation);
+      }
+      if (req.actor.type !== "agent") return null;
+      const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
+      if (!actorAgent || actorAgent.companyId !== companyId) {
+        throw forbidden("Agent key cannot access another company");
+      }
+      return actorAgent;
+    }
+
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return null;
       const allowed = await access.canUser(companyId, req.actor.userId, "agents:create");
@@ -566,6 +584,17 @@ export function agentRoutes(
   async function assertBoardCanManageAgentsForCompany(req: Request, companyId: string) {
     assertBoard(req);
     assertCompanyAccess(req, companyId);
+    const decide = (access as typeof access & { decide?: typeof access.decide }).decide;
+    if (typeof decide === "function") {
+      const decision = await decide({
+        actor: req.actor,
+        action: "agents:create",
+        resource: { type: "company", companyId },
+      });
+      if (decision.allowed) return;
+      throw forbidden(decision.explanation);
+    }
+
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
     const allowed = await access.canUser(companyId, req.actor.userId, "agents:create");
     if (!allowed) {
@@ -592,6 +621,16 @@ export function agentRoutes(
 
   async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
+    const decide = (access as typeof access & { decide?: typeof access.decide }).decide;
+    if (typeof decide === "function") {
+      const decision = await decide({
+        actor: req.actor,
+        action: "agent_config:read",
+        resource: { type: "company", companyId },
+      });
+      return decision.allowed;
+    }
+
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
       return access.canUser(companyId, req.actor.userId, "agents:create");
@@ -672,6 +711,17 @@ export function agentRoutes(
 
   async function assertCanUpdateAgent(req: Request, targetAgent: { id: string; companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
+    const decide = (access as typeof access & { decide?: typeof access.decide }).decide;
+    if (typeof decide === "function") {
+      const decision = await decide({
+        actor: req.actor,
+        action: "agent_config:update",
+        resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+      });
+      if (decision.allowed) return;
+      throw forbidden(decision.explanation);
+    }
+
     if (req.actor.type === "board") {
       await assertBoardCanManageAgentsForCompany(req, targetAgent.companyId);
       return;
