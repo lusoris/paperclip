@@ -74,5 +74,14 @@ export function errorHandler(
   const tc = getTelemetryClient();
   if (tc) trackErrorHandlerCrash(tc, { errorCode: rootError.name });
 
-  res.status(500).json({ error: "Internal server error" });
+  res.status(500).json({
+    error: "Internal server error",
+    ...(shouldExposeTrustedCloudTenantImportError(req) ? { message: rootError.message } : {}),
+  });
+}
+
+function shouldExposeTrustedCloudTenantImportError(req: Request) {
+  return req.actor?.source === "cloud_tenant"
+    && req.method === "POST"
+    && req.originalUrl.split("?")[0] === "/api/companies/import";
 }
