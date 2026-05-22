@@ -124,9 +124,28 @@ type UsePluginSlotsResult = {
  * Keys are `${pluginKey}:${exportName}` to match manifest slot declarations.
  */
 const registry = new Map<string, RegisteredPluginComponent>();
+const registryListeners = new Set<() => void>();
 
 function buildRegistryKey(pluginKey: string, exportName: string): string {
   return `${pluginKey}:${exportName}`;
+}
+
+function notifyRegistryListeners(): void {
+  for (const listener of registryListeners) {
+    listener();
+  }
+}
+
+function usePluginRegistrySubscription(): void {
+  const [, forceRerender] = useState(0);
+
+  useEffect(() => {
+    const listener = () => forceRerender((tick) => tick + 1);
+    registryListeners.add(listener);
+    return () => {
+      registryListeners.delete(listener);
+    };
+  }, []);
 }
 
 function requiresEntityType(slotType: PluginUiSlotType): boolean {
@@ -150,6 +169,7 @@ export function registerPluginReactComponent(
     kind: "react",
     component,
   });
+  notifyRegistryListeners();
 }
 
 /**
@@ -164,6 +184,7 @@ export function registerPluginWebComponent(
     kind: "web-component",
     tagName,
   });
+  notifyRegistryListeners();
 }
 
 function resolveRegisteredComponent(slot: ResolvedPluginSlot): RegisteredPluginComponent | null {
@@ -802,6 +823,7 @@ export function PluginSlotMount({
   className,
   missingBehavior = "hidden",
 }: PluginSlotMountProps) {
+  usePluginRegistrySubscription();
   const [, forceRerender] = useState(0);
   const component = resolveRegisteredComponent(slot);
 
