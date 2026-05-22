@@ -469,6 +469,14 @@ export function createPluginWorkerHandle(
     return undefined;
   }
 
+  function errorCodeForWorkerHostError(err: unknown): number {
+    const code = (err as { code?: unknown } | null)?.code;
+    const pluginErrorCodes: readonly number[] = Object.values(PLUGIN_RPC_ERROR_CODES);
+    return typeof code === "number" && pluginErrorCodes.includes(code)
+      ? code
+      : JSONRPC_ERROR_CODES.INTERNAL_ERROR;
+  }
+
   // -----------------------------------------------------------------------
   // Incoming message handling
   // -----------------------------------------------------------------------
@@ -559,7 +567,7 @@ export function createPluginWorkerHandle(
         sendMessage(
           createErrorResponse(
             request.id,
-            JSONRPC_ERROR_CODES.INTERNAL_ERROR,
+            errorCodeForWorkerHostError(err),
             errorMessage,
           ),
         );

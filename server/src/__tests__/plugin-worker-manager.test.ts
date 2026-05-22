@@ -6,6 +6,7 @@ import {
   createHostClientHandlers,
   type HostServices,
   JsonRpcCallError,
+  PLUGIN_RPC_ERROR_CODES,
   type HostToWorkerMethods,
 } from "@paperclipai/plugin-sdk";
 import {
@@ -274,6 +275,7 @@ describe("plugin-worker-manager stderr failure context", () => {
         },
         renderEnvironment: null,
       })).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
         message: expect.stringContaining("scoped to company \"company-a\""),
       });
     } finally {
