@@ -44,6 +44,25 @@ export function buildBetterAuthAdvancedOptions(input: { disableSecureCookies: bo
   };
 }
 
+export function shouldDisableSecureAuthCookies(input: {
+  deploymentMode: Config["deploymentMode"];
+  deploymentExposure: Config["deploymentExposure"];
+  authBaseUrlMode: Config["authBaseUrlMode"];
+  authPublicBaseUrl: string | undefined;
+  publicUrl: string | undefined;
+}): boolean {
+  const publicUrl = input.publicUrl ?? (
+    input.authBaseUrlMode === "explicit" ? input.authPublicBaseUrl : undefined
+  );
+  if (publicUrl) return publicUrl.startsWith("http://");
+
+  return (
+    input.deploymentMode === "authenticated" &&
+    input.deploymentExposure === "private" &&
+    input.authBaseUrlMode === "auto"
+  );
+}
+
 function headersFromNodeHeaders(rawHeaders: IncomingHttpHeaders): Headers {
   const headers = new Headers();
   for (const [key, raw] of Object.entries(rawHeaders)) {
@@ -100,7 +119,13 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     );
   }
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
-  const isHttpOnly = publicUrl ? publicUrl.startsWith("http://") : false;
+  const disableSecureCookies = shouldDisableSecureAuthCookies({
+    deploymentMode: config.deploymentMode,
+    deploymentExposure: config.deploymentExposure,
+    authBaseUrlMode: config.authBaseUrlMode,
+    authPublicBaseUrl: config.authPublicBaseUrl,
+    publicUrl,
+  });
 
   const authConfig = {
     baseURL: baseUrl,
@@ -120,7 +145,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
-    advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies: isHttpOnly }),
+    advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
   };
 
   if (!baseUrl) {

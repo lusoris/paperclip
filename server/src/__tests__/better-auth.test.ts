@@ -5,6 +5,7 @@ import {
   buildBetterAuthAdvancedOptions,
   deriveAuthCookiePrefix,
   deriveAuthTrustedOrigins,
+  shouldDisableSecureAuthCookies,
 } from "../auth/better-auth.js";
 
 const ORIGINAL_INSTANCE_ID = process.env.PAPERCLIP_INSTANCE_ID;
@@ -29,7 +30,7 @@ describe("Better Auth cookie scoping", () => {
       cookiePrefix: "paperclip-sat-worktree",
     });
     expect(getCookies({ advanced } as BetterAuthOptions).sessionToken.name).toBe(
-      "paperclip-sat-worktree.session_token",
+      "__Secure-paperclip-sat-worktree.session_token",
     );
   });
 
@@ -40,6 +41,47 @@ describe("Better Auth cookie scoping", () => {
       cookiePrefix: "paperclip-pap-worktree",
       useSecureCookies: false,
     });
+    expect(getCookies({
+      advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies: true }),
+    } as BetterAuthOptions).sessionToken.name).toBe("paperclip-pap-worktree.session_token");
+  });
+
+  it("disables secure cookies for authenticated private auto-origin dev servers", () => {
+    expect(shouldDisableSecureAuthCookies({
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      authBaseUrlMode: "auto",
+      authPublicBaseUrl: undefined,
+      publicUrl: undefined,
+    })).toBe(true);
+  });
+
+  it("keeps secure cookies for authenticated public auto-origin servers", () => {
+    expect(shouldDisableSecureAuthCookies({
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+      authBaseUrlMode: "auto",
+      authPublicBaseUrl: undefined,
+      publicUrl: undefined,
+    })).toBe(false);
+  });
+
+  it("uses an explicit public URL when deciding whether secure cookies are required", () => {
+    expect(shouldDisableSecureAuthCookies({
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      authBaseUrlMode: "auto",
+      authPublicBaseUrl: undefined,
+      publicUrl: "https://paperclip.example.test",
+    })).toBe(false);
+
+    expect(shouldDisableSecureAuthCookies({
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "http://paperclip-dev:3100",
+      publicUrl: undefined,
+    })).toBe(true);
   });
 
   it("adds hostname port variants for authenticated mode on non-default ports", () => {
