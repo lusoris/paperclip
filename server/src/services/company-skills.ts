@@ -2925,11 +2925,21 @@ export function companySkillService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
     if (!row) throw notFound("Failed to persist company skill");
+    const installed = toCompanySkill(row);
+    const postAudit = await auditInstalledSkillBytes(installed);
+    if (postAudit.verdict === "fail") {
+      await persistAuditMetadata(installed, postAudit);
+      throw unprocessable("Catalog install produced hard-stop audit findings.", {
+        updateHoldReason: "audit_hard_stop",
+        audit: postAudit,
+      });
+    }
+    const audited = await persistAuditMetadata(installed, postAudit);
     return {
       action: existingByKey ? "updated" : "created",
-      skill: toCompanySkill(row),
+      skill: audited,
       catalogSkill,
-      warnings: [],
+      warnings: postAudit.findings.map((finding) => finding.message),
     };
   }
 

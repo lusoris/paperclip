@@ -152,6 +152,9 @@ describeEmbeddedPostgres("companySkillService.installFromCatalog", () => {
         catalogCategory: "software-development",
         packageName: "@paperclipai/skills-catalog",
         originHash: sampleCatalogSkill.contentHash,
+        installedHash: sampleCatalogSkill.contentHash,
+        auditVerdict: "pass",
+        auditScanVersion: "skills-audit-v1",
       }),
     });
     await expect(fs.readFile(path.join(result.skill.sourceLocator!, "SKILL.md"), "utf8")).resolves.toBe(sampleSkillMarkdown);
