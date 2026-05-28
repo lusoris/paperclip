@@ -1,5 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fetchMock = vi.fn();
 const spawnMock = vi.hoisted(() => vi.fn());
@@ -14,7 +18,7 @@ vi.mock("node:child_process", async () => {
   };
 });
 
-import plugin from "./plugin.js";
+import plugin, { validateSshPrivateKey } from "./plugin.js";
 
 class MockChildProcess extends EventEmitter {
   stdout = new EventEmitter();
@@ -162,6 +166,102 @@ describe("exe.dev sandbox provider plugin", () => {
         "env contains an invalid key: BAD-KEY",
         "strictHostKeyChecking cannot be empty.",
       ],
+    });
+  });
+
+  describe("sshPrivateKey validation", () => {
+    let VALID_OPENSSH: string;
+    let VALID_RSA_PEM: string;
+
+    beforeAll(() => {
+      const dir = mkdtempSync(join(tmpdir(), "exe-dev-ssh-fixture-"));
+      try {
+        const edKey = join(dir, "ed25519");
+        execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "fixture", "-f", edKey], {
+          stdio: "ignore",
+        });
+        VALID_OPENSSH = readFileSync(edKey, "utf-8");
+
+        const rsaKey = join(dir, "rsa");
+        execFileSync(
+          "ssh-keygen",
+          ["-q", "-t", "rsa", "-b", "2048", "-m", "PEM", "-N", "", "-C", "fixture", "-f", rsaKey],
+          { stdio: "ignore" },
+        );
+        VALID_RSA_PEM = readFileSync(rsaKey, "utf-8");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("accepts a valid OpenSSH PEM block", () => {
+      expect(validateSshPrivateKey(VALID_OPENSSH)).toBeNull();
+    });
+
+    it("accepts a valid PKCS#1 RSA PEM block", () => {
+      expect(validateSshPrivateKey(VALID_RSA_PEM)).toBeNull();
+    });
+
+    it("treats empty / whitespace-only input as valid (falls back to on-host key)", () => {
+      expect(validateSshPrivateKey("")).toBeNull();
+      expect(validateSshPrivateKey("   \n\n  ")).toBeNull();
+    });
+
+    it("rejects a pasted public key", () => {
+      expect(
+        validateSshPrivateKey("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE+gT9 user@host"),
+      ).toMatch(/looks like a PUBLIC key/);
+    });
+
+    it("rejects a PuTTY PPK file paste", () => {
+      const ppk = [
+        "PuTTY-User-Key-File-3: ssh-ed25519",
+        "Encryption: none",
+        "Comment: imported-openssh-key",
+        "Public-Lines: 2",
+        "AAAAC3NzaC1lZDI1NTE5AAAAIE+gT9zMxQp4Y6XCfDV2t6oWmqHkKx0K7C7w7q9F6g",
+        "Q3jP",
+      ].join("\n");
+      expect(validateSshPrivateKey(ppk)).toMatch(/PuTTY \.ppk/);
+    });
+
+    it("rejects a missing END marker (truncated paste)", () => {
+      const truncated = VALID_OPENSSH.trimEnd().split("\n").slice(0, -1).join("\n");
+      expect(validateSshPrivateKey(truncated)).toMatch(/missing its '-----END/);
+    });
+
+    it("rejects a body with non-base64 characters", () => {
+      const garbled = [
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "this is not base64!!",
+        "-----END OPENSSH PRIVATE KEY-----",
+      ].join("\n");
+      expect(validateSshPrivateKey(garbled)).toMatch(/non-base64/);
+    });
+
+    it("rejects a header/footer label mismatch", () => {
+      const mismatched = [
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "Zm9vYmFy",
+        "-----END RSA PRIVATE KEY-----",
+      ].join("\n");
+      expect(validateSshPrivateKey(mismatched)).toMatch(/header\/footer mismatch/);
+    });
+
+    it("returns the sshPrivateKey error from onEnvironmentValidateConfig on save", async () => {
+      process.env.EXE_API_KEY = "host-key";
+
+      const result = await plugin.definition.onEnvironmentValidateConfig?.({
+        driverKey: "exe-dev",
+        config: {
+          sshPrivateKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE+gT9 user@host",
+        },
+      });
+
+      expect(result?.ok).toBe(false);
+      expect(result?.errors ?? []).toEqual(
+        expect.arrayContaining([expect.stringMatching(/sshPrivateKey looks like a PUBLIC key/)]),
+      );
     });
   });
 
