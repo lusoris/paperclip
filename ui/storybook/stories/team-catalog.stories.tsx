@@ -17,8 +17,10 @@ import {
   TeamRow,
 } from "@/pages/TeamCatalog";
 import {
+  currentInstalledState,
   onboardingTeams,
   optionalTeam,
+  outOfDateInstalledState,
   sampleTeam as baseTeam,
   warnTeam,
 } from "@/pages/TeamCatalog.fixtures";
@@ -165,6 +167,32 @@ export const DetailPane: Story = {
         canInstall
         fileContent={null}
       />
+    </div>
+  ),
+};
+
+// PAP-10256: installed/out-of-date surface driven by the server signal.
+export const InstalledStates: Story = {
+  render: () => (
+    <div className="flex flex-col gap-6">
+      <div className="w-[28rem] border border-border">
+        <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Bundled · 1</div>
+        <TeamRow team={optionalTeam} selected={false} onSelect={noop} />
+        <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Installed · 2</div>
+        <TeamRow team={baseTeam} selected onSelect={noop} installed={outOfDateInstalledState} />
+        <TeamRow team={warnTeam} selected={false} onSelect={noop} installed={currentInstalledState} />
+      </div>
+      <div className="h-[760px] overflow-hidden border border-border">
+        <TeamDetailPane
+          team={baseTeam}
+          selectedPath={null}
+          onSelectFile={noop}
+          onInstall={noop}
+          canInstall
+          fileContent={null}
+          installed={outOfDateInstalledState}
+        />
+      </div>
     </div>
   ),
 };

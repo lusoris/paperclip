@@ -17,6 +17,7 @@ const mockTeamCatalogApi = vi.hoisted(() => ({
   catalogFile: vi.fn(),
   preview: vi.fn(),
   install: vi.fn(),
+  installed: vi.fn(),
 }));
 
 const mockAgentsApi = vi.hoisted(() => ({
@@ -201,6 +202,7 @@ describe("TeamCatalog install preview path", () => {
     document.body.appendChild(container);
     currentRoute = "team-no-deps";
     mockAgentsApi.list.mockResolvedValue([]);
+    mockTeamCatalogApi.installed.mockResolvedValue([]);
     mockTeamCatalogApi.catalogList.mockResolvedValue([makeTeam()]);
     mockTeamCatalogApi.preview.mockResolvedValue(makePreview());
     mockTeamCatalogApi.install.mockResolvedValue({
@@ -386,5 +388,54 @@ describe("TeamCatalog install preview path", () => {
     expect(continueBtn!.disabled).toBe(true);
     // Preview has not been requested yet (still on step 1).
     expect(mockTeamCatalogApi.preview).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the INSTALLED group, out-of-date badge, and Re-install CTA from the server signal", async () => {
+    mockTeamCatalogApi.installed.mockResolvedValue([
+      {
+        catalogId: "team-no-deps",
+        catalogKey: "paperclipai/bundled/company-defaults/team-no-deps",
+        present: true,
+        currentContentHash: "sha256:deadbeefdeadbeefdeadbeef",
+        installedOriginHashes: ["sha256:stale"],
+        agentCount: 2,
+        outOfDate: true,
+      },
+    ]);
+
+    await renderPage();
+
+    // List group header reflects the installed team, not Bundled.
+    expect(document.body.textContent).toContain("Installed · 1");
+    expect(document.body.textContent).not.toContain("Bundled · 1");
+
+    // Detail header chip + Re-install CTA replace the plain Install button.
+    expect(document.body.textContent).toContain("Update available");
+    expect(findButton("Re-install latest")).toBeTruthy();
+    expect(findButton("Install team")).toBeFalsy();
+
+    // The out-of-date badge in the list row exposes an accessible label.
+    expect(document.querySelector('[aria-label="Update available"]')).toBeTruthy();
+  });
+
+  it("renders an Installed badge (no update chip) when the installed team is current", async () => {
+    mockTeamCatalogApi.installed.mockResolvedValue([
+      {
+        catalogId: "team-no-deps",
+        catalogKey: "paperclipai/bundled/company-defaults/team-no-deps",
+        present: true,
+        currentContentHash: "sha256:deadbeefdeadbeefdeadbeef",
+        installedOriginHashes: ["sha256:deadbeefdeadbeefdeadbeef"],
+        agentCount: 2,
+        outOfDate: false,
+      },
+    ]);
+
+    await renderPage();
+
+    expect(document.body.textContent).toContain("Installed · 1");
+    expect(document.body.textContent).toContain("Installed");
+    expect(document.body.textContent).not.toContain("Update available");
+    expect(findButton("Re-install latest")).toBeTruthy();
   });
 });
