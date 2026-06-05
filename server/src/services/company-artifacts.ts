@@ -267,8 +267,20 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           .from(issueWorkProducts)
           .innerJoin(issues, eq(issueWorkProducts.issueId, issues.id))
           .leftJoin(projects, eq(issues.projectId, projects.id))
-          .leftJoin(heartbeatRuns, eq(issueWorkProducts.createdByRunId, heartbeatRuns.id))
-          .leftJoin(workProductAgent, eq(heartbeatRuns.agentId, workProductAgent.id))
+          .leftJoin(
+            heartbeatRuns,
+            and(
+              eq(issueWorkProducts.createdByRunId, heartbeatRuns.id),
+              eq(heartbeatRuns.companyId, issueWorkProducts.companyId),
+            ),
+          )
+          .leftJoin(
+            workProductAgent,
+            and(
+              eq(heartbeatRuns.agentId, workProductAgent.id),
+              eq(workProductAgent.companyId, issueWorkProducts.companyId),
+            ),
+          )
           .where(and(...workProductConditions))
           .orderBy(desc(issueWorkProducts.updatedAt), desc(workProductArtifactId))
           .limit(fetchLimit);

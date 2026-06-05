@@ -91,6 +91,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     const secondIssueId = "77777777-7777-4777-8777-777777777777";
     const otherIssueId = "88888888-8888-4888-8888-888888888888";
     const runId = "99999999-9999-4999-8999-999999999999";
+    const otherRunId = "19191919-1919-4191-8191-191919191919";
     const directAttachmentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const workProductAttachmentId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
@@ -130,12 +131,20 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         priority: "medium",
       },
     ]);
-    await db.insert(heartbeatRuns).values({
-      id: runId,
-      companyId,
-      agentId,
-      status: "completed",
-    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: runId,
+        companyId,
+        agentId,
+        status: "completed",
+      },
+      {
+        id: otherRunId,
+        companyId: otherCompanyId,
+        agentId: otherAgentId,
+        status: "completed",
+      },
+    ]);
     await db.insert(documents).values([
       {
         id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
@@ -320,7 +329,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       updatedAt: new Date("2026-01-02T12:00:00.000Z"),
     });
 
-    return { companyId, projectId };
+    return { companyId, projectId, issueId, otherRunId };
   }
 
   it("projects agent-created documents, direct attachments, and work products while excluding noisy sources", async () => {
@@ -376,6 +385,31 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       cursor: firstPage.nextCursor ?? undefined,
     });
     expect(secondPage.artifacts.map((artifact) => artifact.title)).toEqual(["Primary Cut", "notes.txt"]);
+  });
+
+  it("does not project a foreign agent from a malformed work product run reference", async () => {
+    const { companyId, issueId, otherRunId } = await seedArtifacts();
+
+    await db.insert(issueWorkProducts).values({
+      id: "1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a",
+      companyId,
+      issueId,
+      type: "artifact",
+      provider: "paperclip",
+      title: "Forged Run Artifact",
+      status: "ready_for_review",
+      summary: "Historically malformed run attribution",
+      metadata: { contentType: "text/plain" },
+      createdByRunId: otherRunId,
+      updatedAt: new Date("2026-01-10T00:00:00.000Z"),
+    });
+
+    const result = await companyArtifactsService(db, createStorageService()).list(companyId, { limit: 20 });
+    const forged = result.artifacts.find((artifact) => artifact.title === "Forged Run Artifact");
+
+    expect(forged).toBeTruthy();
+    expect(forged?.createdByAgent).toBeNull();
+    expect(result.artifacts.some((artifact) => artifact.createdByAgent?.name === "Other")).toBe(false);
   });
 });
 
