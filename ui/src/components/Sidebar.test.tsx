@@ -197,6 +197,25 @@ describe("Sidebar", () => {
     });
   });
 
+  it("shows an Artifacts nav item directly below Goals", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    const artifactsLink = [...container.querySelectorAll("a")].find(
+      (anchor) => anchor.textContent === "Artifacts",
+    );
+    expect(artifactsLink?.getAttribute("href")).toBe("/artifacts");
+
+    const navText = container.querySelector("nav")?.textContent ?? "";
+    expect(navText).toContain("Goals");
+    expect(navText).toContain("Artifacts");
+    expect(navText.indexOf("Goals")).toBeLessThan(navText.indexOf("Artifacts"));
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("shows the Workspaces link when isolated workspaces are enabled", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     const root = await renderSidebar();

@@ -1,0 +1,109 @@
+import type { ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/router", () => ({
+  Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => (
+    <a href={to} {...props}>
+      {children}
+    </a>
+  ),
+}));
+
+import { ArtifactCard } from "./ArtifactCard";
+import type { CompanyArtifact } from "@/api/artifacts";
+
+function makeArtifact(overrides: Partial<CompanyArtifact> = {}): CompanyArtifact {
+  return {
+    id: "art-1",
+    source: "attachment",
+    mediaKind: "image",
+    title: "Hero shot",
+    previewText: null,
+    contentType: "image/png",
+    contentPath: "/files/art-1.png",
+    openPath: "/files/art-1.png",
+    downloadPath: "/files/art-1.png?download=1",
+    issue: { id: "issue-1", identifier: "PAP-10306", title: "Landing visuals" },
+    project: { id: "proj-1", name: "Paperclip App" },
+    createdByAgent: { id: "agent-1", name: "ClaudeCoder" },
+    updatedAt: "2026-06-01T00:00:00.000Z",
+    href: "/issues/PAP-10306#attachment-art-1",
+    ...overrides,
+  };
+}
+
+describe("ArtifactCard", () => {
+  it("renders an image preview with cover image and links to the issue anchor", () => {
+    const markup = renderToStaticMarkup(<ArtifactCard artifact={makeArtifact()} />);
+    expect(markup).toContain('href="/issues/PAP-10306#attachment-art-1"');
+    expect(markup).toContain('data-media-kind="image"');
+    expect(markup).toContain('src="/files/art-1.png"');
+    expect(markup).toContain("object-cover");
+    expect(markup).toContain("Hero shot");
+    expect(markup).toContain("PAP-10306");
+  });
+
+  it("renders a video preview with a video element and play glyph", () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactCard
+        artifact={makeArtifact({ mediaKind: "video", contentType: "video/mp4", contentPath: "/files/clip.mp4" })}
+      />,
+    );
+    expect(markup).toContain('data-media-kind="video"');
+    expect(markup).toContain("<video");
+    expect(markup).toContain('preload="metadata"');
+  });
+
+  it("renders a falling-back video placeholder when no content path exists", () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactCard artifact={makeArtifact({ mediaKind: "video", contentPath: null })} />,
+    );
+    expect(markup).toContain('data-media-kind="video"');
+    expect(markup).not.toContain("<video");
+  });
+
+  it("renders a document preview excerpt", () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactCard
+        artifact={makeArtifact({
+          source: "document",
+          mediaKind: "document",
+          contentType: "text/markdown",
+          contentPath: null,
+          previewText: "This is the plan preview excerpt.",
+        })}
+      />,
+    );
+    expect(markup).toContain('data-media-kind="document"');
+    expect(markup).toContain("This is the plan preview excerpt.");
+  });
+
+  it("renders a placeholder for empty artifacts without an image or video", () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactCard
+        artifact={makeArtifact({ mediaKind: "empty", contentType: null, contentPath: null, previewText: null })}
+      />,
+    );
+    expect(markup).toContain('data-media-kind="empty"');
+    expect(markup).not.toContain("<img");
+    expect(markup).not.toContain("<video");
+  });
+
+  it("omits open/download actions when no file paths exist (e.g. documents)", () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactCard
+        artifact={makeArtifact({
+          source: "document",
+          mediaKind: "document",
+          contentPath: null,
+          openPath: null,
+          downloadPath: null,
+          previewText: "Plan body",
+        })}
+      />,
+    );
+    expect(markup).not.toContain('aria-label="Download file"');
+    expect(markup).not.toContain('aria-label="Open file in new tab"');
+  });
+});
