@@ -20,6 +20,8 @@ import {
   companyArtifactsQuerySchema,
   SYSTEM_ISSUE_DOCUMENT_KEYS,
   type CompanyArtifact,
+  type CompanyArtifactGroup,
+  type CompanyArtifactGroupBy,
   type CompanyArtifactMediaKind,
   type CompanyArtifactsQuery,
   type CompanyArtifactsResponse,
@@ -29,10 +31,21 @@ import type { StorageService } from "../storage/types.js";
 
 const TEXT_PREVIEW_BYTES = 4096;
 const PREVIEW_TEXT_MAX_LENGTH = 280;
+const GROUP_PREVIEW_ARTIFACT_LIMIT = 3;
 
 type ArtifactCursor = {
   updatedAt: string;
   id: string;
+};
+
+type ArtifactGroupBy = Exclude<CompanyArtifactGroupBy, "none">;
+
+type IssueGroupingRow = {
+  id: string;
+  parentId: string | null;
+  identifier: string | null;
+  title: string;
+  updatedAt: Date;
 };
 
 function encodeCursor(cursor: ArtifactCursor) {
@@ -59,6 +72,12 @@ function decodeCursor(cursor: string | undefined): ArtifactCursor | null {
 function cursorCondition(updatedAt: SQL<Date>, artifactId: SQL<string>, cursor: ArtifactCursor | null) {
   if (!cursor) return undefined;
   return sql`(${updatedAt} < ${cursor.updatedAt}::timestamptz OR (${updatedAt} = ${cursor.updatedAt}::timestamptz AND ${artifactId} < ${cursor.id}))`;
+}
+
+function isAfterCursor(item: { updatedAt: string; id: string }, cursor: ArtifactCursor | null) {
+  if (!cursor) return true;
+  const dateDiff = Date.parse(item.updatedAt) - Date.parse(cursor.updatedAt);
+  return dateDiff < 0 || (dateDiff === 0 && item.id < cursor.id);
 }
 
 function escapeLikePattern(value: string) {
@@ -116,6 +135,21 @@ function buildIssueHref(companyPrefix: string, identifier: string, anchor: strin
   return `/${encodeURIComponent(companyPrefix)}/issues/${encodeURIComponent(identifier)}#${anchor}`;
 }
 
+function buildArtifactsGroupHref(
+  companyPrefix: string,
+  query: CompanyArtifactsQuery,
+  groupBy: ArtifactGroupBy,
+  groupIssueId: string,
+) {
+  const params = new URLSearchParams();
+  params.set("groupBy", groupBy);
+  params.set("groupIssueId", groupIssueId);
+  if (query.kind !== "all") params.set("kind", query.kind);
+  if (query.projectId) params.set("projectId", query.projectId);
+  if (query.q) params.set("q", query.q);
+  return `/${encodeURIComponent(companyPrefix)}/artifacts?${params.toString()}`;
+}
+
 function attachmentContentPath(attachmentId: string) {
   return `/api/attachments/${attachmentId}/content`;
 }
@@ -136,11 +170,141 @@ async function readTextAttachmentPreview(
   }
 }
 
+function sortArtifacts(artifacts: CompanyArtifact[]) {
+  return artifacts.sort((a, b) => {
+    const dateDiff = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+    if (dateDiff !== 0) return dateDiff;
+    return b.id.localeCompare(a.id);
+  });
+}
+
+function pageByCursor<T extends { id: string; updatedAt: string }>(
+  items: T[],
+  limit: number,
+  cursor: ArtifactCursor | null,
+) {
+  const filtered = items.filter((item) => isAfterCursor(item, cursor));
+  const page = filtered.slice(0, limit);
+  const nextCursor = filtered.length > limit
+    ? encodeCursor({ id: page[page.length - 1]?.id ?? "", updatedAt: page[page.length - 1]?.updatedAt ?? new Date(0).toISOString() })
+    : null;
+  return { page, nextCursor };
+}
+
+async function loadIssueGroupingRows(db: Db, companyId: string) {
+  const rows = await db
+    .select({
+      id: issues.id,
+      parentId: issues.parentId,
+      identifier: issues.identifier,
+      title: issues.title,
+      updatedAt: issues.updatedAt,
+    })
+    .from(issues)
+    .where(eq(issues.companyId, companyId));
+
+  return new Map(rows.map((row): [string, IssueGroupingRow] => [row.id, row]));
+}
+
+function getIssueSummary(issue: IssueGroupingRow) {
+  return {
+    id: issue.id,
+    identifier: issue.identifier ?? issue.id,
+    title: issue.title,
+  };
+}
+
+function resolveRootIssueId(issueId: string, issueRows: Map<string, IssueGroupingRow>) {
+  let current = issueRows.get(issueId);
+  if (!current) return issueId;
+  const seen = new Set<string>();
+  while (current.parentId && !seen.has(current.id)) {
+    seen.add(current.id);
+    const parent = issueRows.get(current.parentId);
+    if (!parent) break;
+    current = parent;
+  }
+  return current.id;
+}
+
+function resolveGroupIssueId(groupBy: ArtifactGroupBy, issueId: string, issueRows: Map<string, IssueGroupingRow>) {
+  return groupBy === "task" ? issueId : resolveRootIssueId(issueId, issueRows);
+}
+
+function emptyGroup(input: {
+  companyPrefix: string;
+  query: CompanyArtifactsQuery;
+  groupBy: ArtifactGroupBy;
+  issue: IssueGroupingRow;
+}): CompanyArtifactGroup {
+  const summary = getIssueSummary(input.issue);
+  return {
+    id: `${input.groupBy}:${input.issue.id}`,
+    groupBy: input.groupBy,
+    issue: summary,
+    title: summary.title,
+    count: 0,
+    mediaKinds: [],
+    previewArtifacts: [],
+    updatedAt: input.issue.updatedAt.toISOString(),
+    href: buildArtifactsGroupHref(input.companyPrefix, input.query, input.groupBy, input.issue.id),
+  };
+}
+
+function buildArtifactGroups(input: {
+  artifacts: CompanyArtifact[];
+  companyPrefix: string;
+  query: CompanyArtifactsQuery;
+  groupBy: ArtifactGroupBy;
+  issueRows: Map<string, IssueGroupingRow>;
+}) {
+  const groups = new Map<string, CompanyArtifactGroup>();
+
+  for (const artifact of input.artifacts) {
+    const groupIssueId = resolveGroupIssueId(input.groupBy, artifact.issue.id, input.issueRows);
+    const groupIssue = input.issueRows.get(groupIssueId) ?? {
+      id: artifact.issue.id,
+      parentId: null,
+      identifier: artifact.issue.identifier,
+      title: artifact.issue.title,
+      updatedAt: new Date(artifact.updatedAt),
+    };
+    const groupId = `${input.groupBy}:${groupIssueId}`;
+    const existing = groups.get(groupId);
+    const group = existing ?? emptyGroup({
+      companyPrefix: input.companyPrefix,
+      query: input.query,
+      groupBy: input.groupBy,
+      issue: groupIssue,
+    });
+    if (!existing) groups.set(groupId, group);
+
+    group.count += 1;
+    if (!group.mediaKinds.includes(artifact.mediaKind)) {
+      group.mediaKinds.push(artifact.mediaKind);
+    }
+    if (group.previewArtifacts.length < GROUP_PREVIEW_ARTIFACT_LIMIT) {
+      group.previewArtifacts.push(artifact);
+    }
+    const dateDiff = Date.parse(artifact.updatedAt) - Date.parse(group.updatedAt);
+    if (dateDiff > 0 || (dateDiff === 0 && artifact.id > group.id)) {
+      group.updatedAt = artifact.updatedAt;
+    }
+  }
+
+  return [...groups.values()].sort((a, b) => {
+    const dateDiff = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+    if (dateDiff !== 0) return dateDiff;
+    return b.id.localeCompare(a.id);
+  });
+}
+
 export function companyArtifactsService(db: Db, storage?: StorageService) {
   return {
     list: async (companyId: string, rawQuery: Partial<CompanyArtifactsQuery> = {}): Promise<CompanyArtifactsResponse> => {
       const query = companyArtifactsQuerySchema.parse(rawQuery);
       const cursor = decodeCursor(query.cursor);
+      const groupBy = query.groupBy === "none" ? null : query.groupBy;
       const company = await db
         .select({ id: companies.id, issuePrefix: companies.issuePrefix })
         .from(companies)
@@ -162,7 +326,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           or(isNotNull(documents.createdByAgentId), isNotNull(documents.updatedByAgentId))!,
           notInArray(issueDocuments.key, [...SYSTEM_ISSUE_DOCUMENT_KEYS]),
         ];
-        const documentCursor = cursorCondition(sql<Date>`${documents.updatedAt}`, documentArtifactId, cursor);
+        const documentCursor = groupBy ? undefined : cursorCondition(sql<Date>`${documents.updatedAt}`, documentArtifactId, cursor);
         if (documentCursor) documentConditions.push(documentCursor);
         if (query.projectId) documentConditions.push(eq(issues.projectId, query.projectId));
         if (q) {
@@ -174,7 +338,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           )`);
         }
 
-        const documentRows = await db
+        const documentRowsQuery = db
           .select({
             artifactId: documentArtifactId,
             documentId: documents.id,
@@ -197,8 +361,8 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           .leftJoin(createdAgent, eq(documents.createdByAgentId, createdAgent.id))
           .leftJoin(updatedAgent, eq(documents.updatedByAgentId, updatedAgent.id))
           .where(and(...documentConditions))
-          .orderBy(desc(documents.updatedAt), desc(documentArtifactId))
-          .limit(fetchLimit);
+          .orderBy(desc(documents.updatedAt), desc(documentArtifactId));
+        const documentRows = groupBy ? await documentRowsQuery : await documentRowsQuery.limit(fetchLimit);
 
         for (const row of documentRows) {
           const identifier = row.issueIdentifier ?? row.issueId;
@@ -233,7 +397,9 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           eq(issueWorkProducts.provider, "paperclip"),
         ];
         const workProductConditions: SQL[] = [...workProductBaseConditions];
-        const workProductCursor = cursorCondition(sql<Date>`${issueWorkProducts.updatedAt}`, workProductArtifactId, cursor);
+        const workProductCursor = groupBy
+          ? undefined
+          : cursorCondition(sql<Date>`${issueWorkProducts.updatedAt}`, workProductArtifactId, cursor);
         const workProductKind = contentTypeKindCondition(workProductContentType, query.kind);
         if (workProductCursor) workProductConditions.push(workProductCursor);
         if (workProductKind) {
@@ -256,7 +422,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           workProductConditions.push(searchCondition);
         }
 
-        const workProductRows = await db
+        const workProductRowsQuery = db
           .select({
             artifactId: workProductArtifactId,
             workProductId: issueWorkProducts.id,
@@ -290,8 +456,8 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             ),
           )
           .where(and(...workProductConditions))
-          .orderBy(desc(issueWorkProducts.updatedAt), desc(workProductArtifactId))
-          .limit(fetchLimit);
+          .orderBy(desc(issueWorkProducts.updatedAt), desc(workProductArtifactId));
+        const workProductRows = groupBy ? await workProductRowsQuery : await workProductRowsQuery.limit(fetchLimit);
 
         const workProductAttachmentRows = await db
           .select({
@@ -342,7 +508,9 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           isNull(issueAttachments.issueCommentId),
           isNotNull(assets.createdByAgentId),
         ];
-        const attachmentCursor = cursorCondition(sql<Date>`${issueAttachments.updatedAt}`, attachmentArtifactId, cursor);
+        const attachmentCursor = groupBy
+          ? undefined
+          : cursorCondition(sql<Date>`${issueAttachments.updatedAt}`, attachmentArtifactId, cursor);
         const attachmentKind = contentTypeKindCondition(sql<string>`${assets.contentType}`, query.kind);
         if (attachmentCursor) attachmentConditions.push(attachmentCursor);
         if (attachmentKind) attachmentConditions.push(attachmentKind);
@@ -355,7 +523,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           )`);
         }
 
-        const attachmentRows = await db
+        const attachmentRowsQuery = db
           .select({
             artifactId: attachmentArtifactId,
             attachmentId: issueAttachments.id,
@@ -379,8 +547,8 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           .leftJoin(projects, eq(issues.projectId, projects.id))
           .leftJoin(attachmentAgent, eq(assets.createdByAgentId, attachmentAgent.id))
           .where(and(...attachmentConditions))
-          .orderBy(desc(issueAttachments.updatedAt), desc(attachmentArtifactId))
-          .limit(fetchLimit);
+          .orderBy(desc(issueAttachments.updatedAt), desc(attachmentArtifactId));
+        const attachmentRows = groupBy ? await attachmentRowsQuery : await attachmentRowsQuery.limit(fetchLimit);
 
         const attachmentArtifacts = await Promise.all(attachmentRows.map(async (row): Promise<CompanyArtifact | null> => {
           if (workProductAttachmentIds.has(row.attachmentId)) return null;
@@ -416,18 +584,48 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         artifacts.push(...attachmentArtifacts.filter((artifact): artifact is CompanyArtifact => artifact !== null));
       }
 
-      const sorted = artifacts
-        .sort((a, b) => {
-          const dateDiff = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
-          if (dateDiff !== 0) return dateDiff;
-          return b.id.localeCompare(a.id);
-        });
-      const page = sorted.slice(0, query.limit);
-      const nextCursor = sorted.length > query.limit
-        ? encodeCursor({ id: page[page.length - 1]?.id ?? "", updatedAt: page[page.length - 1]?.updatedAt ?? new Date(0).toISOString() })
-        : null;
+      const sorted = sortArtifacts(artifacts);
+      if (!groupBy) {
+        const page = sorted.slice(0, query.limit);
+        const nextCursor = sorted.length > query.limit
+          ? encodeCursor({ id: page[page.length - 1]?.id ?? "", updatedAt: page[page.length - 1]?.updatedAt ?? new Date(0).toISOString() })
+          : null;
 
-      return { artifacts: page, nextCursor };
+        return { artifacts: page, nextCursor };
+      }
+
+      const issueRows = await loadIssueGroupingRows(db, companyId);
+      const groups = buildArtifactGroups({
+        artifacts: sorted,
+        companyPrefix: company.issuePrefix,
+        query,
+        groupBy,
+        issueRows,
+      });
+
+      if (query.groupIssueId) {
+        const selectedIssue = issueRows.get(query.groupIssueId);
+        if (!selectedIssue) {
+          return { artifacts: [], selectedGroup: null, nextCursor: null };
+        }
+
+        const selectedGroupIssueId = resolveGroupIssueId(groupBy, selectedIssue.id, issueRows);
+        const selectedGroup = groups.find((group) => group.issue.id === selectedGroupIssueId)
+          ?? emptyGroup({
+            companyPrefix: company.issuePrefix,
+            query,
+            groupBy,
+            issue: issueRows.get(selectedGroupIssueId) ?? selectedIssue,
+          });
+        const selectedArtifacts = sorted.filter((artifact) =>
+          resolveGroupIssueId(groupBy, artifact.issue.id, issueRows) === selectedGroupIssueId
+        );
+        const { page, nextCursor } = pageByCursor(selectedArtifacts, query.limit, cursor);
+        return { artifacts: page, selectedGroup, nextCursor };
+      }
+
+      const { page, nextCursor } = pageByCursor(groups, query.limit, cursor);
+      return { artifacts: [], groups: page, nextCursor };
     },
   };
 }

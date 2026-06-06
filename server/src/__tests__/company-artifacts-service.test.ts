@@ -1,5 +1,6 @@
 import { Readable } from "node:stream";
 import express from "express";
+import { eq } from "drizzle-orm";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -329,7 +330,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       updatedAt: new Date("2026-01-02T12:00:00.000Z"),
     });
 
-    return { companyId, projectId, issueId, otherRunId };
+    return { companyId, projectId, issueId, secondIssueId, otherIssueId, otherRunId };
   }
 
   it("projects agent-created documents, direct attachments, and work products while excluding noisy sources", async () => {
@@ -494,6 +495,189 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     expect(forged).toBeTruthy();
     expect(forged?.createdByAgent).toBeNull();
     expect(result.artifacts.some((artifact) => artifact.createdByAgent?.name === "Other")).toBe(false);
+  });
+
+  it("groups artifacts by task after applying media, project, and search filters", async () => {
+    const { companyId, projectId, issueId } = await seedArtifacts();
+    const storage = createStorageService({ "notes.txt": Buffer.from("Searchable notes preview") });
+
+    const grouped = await companyArtifactsService(db, storage).list(companyId, {
+      groupBy: "task",
+      limit: 10,
+    });
+    expect(grouped.artifacts).toEqual([]);
+    expect(grouped.nextCursor).toBeNull();
+    expect(grouped.groups?.map((group) => ({
+      issue: group.issue.identifier,
+      count: group.count,
+      mediaKinds: group.mediaKinds,
+      href: group.href,
+    }))).toEqual([
+      {
+        issue: "PAP-2",
+        count: 1,
+        mediaKinds: ["document"],
+        href: "/PAP/artifacts?groupBy=task&groupIssueId=77777777-7777-4777-8777-777777777777",
+      },
+      {
+        issue: "PAP-1",
+        count: 3,
+        mediaKinds: ["video", "text"],
+        href: "/PAP/artifacts?groupBy=task&groupIssueId=66666666-6666-4666-8666-666666666666",
+      },
+    ]);
+    expect(grouped.groups?.find((group) => group.issue.id === issueId)?.previewArtifacts.map((artifact) => artifact.title))
+      .toEqual(["direct-video.mp4", "Primary Cut", "notes.txt"]);
+
+    const projectVideos = await companyArtifactsService(db, storage).list(companyId, {
+      groupBy: "task",
+      projectId,
+      kind: "video",
+      limit: 10,
+    });
+    expect(projectVideos.groups?.map((group) => ({
+      issue: group.issue.identifier,
+      count: group.count,
+      href: group.href,
+    }))).toEqual([
+      {
+        issue: "PAP-1",
+        count: 2,
+        href:
+          "/PAP/artifacts?groupBy=task&groupIssueId=66666666-6666-4666-8666-666666666666&kind=video&projectId=55555555-5555-4555-8555-555555555555",
+      },
+    ]);
+
+    const search = await companyArtifactsService(db, storage).list(companyId, {
+      groupBy: "task",
+      q: "review document",
+      limit: 10,
+    });
+    expect(search.groups?.map((group) => ({ issue: group.issue.identifier, count: group.count }))).toEqual([
+      { issue: "PAP-2", count: 1 },
+    ]);
+  });
+
+  it("paginates grouped task lists with the active group cursor", async () => {
+    const { companyId } = await seedArtifacts();
+
+    const firstPage = await companyArtifactsService(db, createStorageService()).list(companyId, {
+      groupBy: "task",
+      limit: 1,
+    });
+    expect(firstPage.groups?.map((group) => group.issue.identifier)).toEqual(["PAP-2"]);
+    expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+    const secondPage = await companyArtifactsService(db, createStorageService()).list(companyId, {
+      groupBy: "task",
+      limit: 10,
+      cursor: firstPage.nextCursor ?? undefined,
+    });
+    expect(secondPage.groups?.map((group) => group.issue.identifier)).toEqual(["PAP-1"]);
+    expect(secondPage.nextCursor).toBeNull();
+  });
+
+  it("groups parent-task artifacts under the topmost same-company ancestor", async () => {
+    const { companyId, issueId, secondIssueId } = await seedArtifacts();
+    const grandchildIssueId = "21212121-2121-4212-8121-212121212121";
+    const grandchildAttachmentId = "23232323-2323-4232-8232-232323232323";
+
+    await db.update(issues).set({ parentId: issueId }).where(eq(issues.id, secondIssueId));
+    await db.insert(issues).values({
+      id: grandchildIssueId,
+      companyId,
+      parentId: secondIssueId,
+      identifier: "PAP-3",
+      title: "Grandchild render",
+      status: "done",
+      priority: "medium",
+    });
+    await db.insert(assets).values({
+      id: "24242424-2424-4242-8242-242424242424",
+      companyId,
+      provider: "local_disk",
+      objectKey: "grandchild.txt",
+      contentType: "text/plain",
+      byteSize: 48,
+      sha256: "sha256-grandchild",
+      originalFilename: "grandchild.txt",
+      createdByAgentId: "33333333-3333-4333-8333-333333333333",
+    });
+    await db.insert(issueAttachments).values({
+      id: grandchildAttachmentId,
+      companyId,
+      issueId: grandchildIssueId,
+      assetId: "24242424-2424-4242-8242-242424242424",
+      updatedAt: new Date("2026-01-05T00:00:00.000Z"),
+    });
+
+    const grouped = await companyArtifactsService(db, createStorageService()).list(companyId, {
+      groupBy: "parent_task",
+      limit: 10,
+    });
+
+    expect(grouped.artifacts).toEqual([]);
+    expect(grouped.groups?.map((group) => ({
+      issue: group.issue.identifier,
+      count: group.count,
+      previewTitles: group.previewArtifacts.map((artifact) => artifact.title),
+    }))).toEqual([
+      {
+        issue: "PAP-1",
+        count: 5,
+        previewTitles: ["grandchild.txt", "Review Notes", "direct-video.mp4"],
+      },
+    ]);
+  });
+
+  it("returns selected group artifact pages and metadata without leaking foreign group issues", async () => {
+    const { companyId, issueId, otherIssueId } = await seedArtifacts();
+
+    const selected = await companyArtifactsService(db, createStorageService()).list(companyId, {
+      groupBy: "task",
+      groupIssueId: issueId,
+      limit: 2,
+    });
+    expect(selected.groups).toBeUndefined();
+    expect(selected.selectedGroup).toMatchObject({
+      id: `task:${issueId}`,
+      groupBy: "task",
+      issue: { identifier: "PAP-1" },
+      count: 3,
+    });
+    expect(selected.artifacts.map((artifact) => artifact.title)).toEqual(["direct-video.mp4", "Primary Cut"]);
+    expect(selected.nextCursor).toEqual(expect.any(String));
+
+    const selectedSecondPage = await companyArtifactsService(db, createStorageService()).list(companyId, {
+      groupBy: "task",
+      groupIssueId: issueId,
+      limit: 10,
+      cursor: selected.nextCursor ?? undefined,
+    });
+    expect(selectedSecondPage.artifacts.map((artifact) => artifact.title)).toEqual(["notes.txt"]);
+
+    const selectedEmptyByFilter = await companyArtifactsService(db, createStorageService()).list(companyId, {
+      groupBy: "task",
+      groupIssueId: issueId,
+      q: "does-not-match-this-stack",
+      limit: 10,
+    });
+    expect(selectedEmptyByFilter.selectedGroup).toMatchObject({
+      id: `task:${issueId}`,
+      count: 0,
+    });
+    expect(selectedEmptyByFilter.artifacts).toEqual([]);
+
+    const foreignSelected = await companyArtifactsService(db, createStorageService()).list(companyId, {
+      groupBy: "task",
+      groupIssueId: otherIssueId,
+      limit: 10,
+    });
+    expect(foreignSelected).toEqual({
+      artifacts: [],
+      selectedGroup: null,
+      nextCursor: null,
+    });
   });
 });
 
