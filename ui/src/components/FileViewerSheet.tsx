@@ -38,6 +38,7 @@ import {
   type FileViewerUrlState,
 } from "@/context/FileViewerContext";
 import { parseWorkspaceFileRef } from "@/lib/workspace-file-parser";
+import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
 import type {
   ResolvedWorkspaceResource,
   WorkspaceFileContent,
@@ -256,6 +257,30 @@ function OpenFilePrompt({ onSubmit }: OpenFilePromptProps) {
         </Button>
       </div>
     </form>
+  );
+}
+
+interface FileViewerEmptyStateProps {
+  issueId: string;
+  onBrowseOpen: (ref: { path: string; workspace: WorkspaceFileSelector }) => void;
+  onSubmitPath: OpenFilePromptProps["onSubmit"];
+}
+
+function FileViewerEmptyState({ issueId, onBrowseOpen, onSubmitPath }: FileViewerEmptyStateProps) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <WorkspaceFileBrowser
+        issueId={issueId}
+        onOpen={onBrowseOpen}
+        className="min-h-0 flex-1 p-4 pb-2"
+      />
+      <details className="border-t border-border">
+        <summary className="cursor-pointer list-none px-4 py-2.5 text-xs text-muted-foreground hover:text-foreground">
+          Open a specific path…
+        </summary>
+        <OpenFilePrompt onSubmit={onSubmitPath} />
+      </details>
+    </div>
   );
 }
 
@@ -517,10 +542,10 @@ export function FileViewerSheet({
     if (canPreview) void contentQuery.refetch();
   }, [canPreview, contentQuery, resolveQuery]);
 
-  const title = state ? basename(state.path) : "Open file";
+  const title = state ? basename(state.path) : "Browse workspace";
   const description = state
     ? middleTruncatePath(state.path)
-    : "Enter a workspace-relative path to preview.";
+    : "Search and preview files from this issue's workspace.";
   const showDescription = state ? description !== title : true;
 
   return (
@@ -644,7 +669,11 @@ export function FileViewerSheet({
               }
             />
           ) : showPromptWhenEmpty ? (
-            <OpenFilePrompt onSubmit={handlePromptSubmit} />
+            <FileViewerEmptyState
+              issueId={issueId}
+              onBrowseOpen={(ref) => viewer.open({ path: ref.path, line: null, column: null, workspace: ref.workspace })}
+              onSubmitPath={handlePromptSubmit}
+            />
           ) : null}
         </div>
       </SheetContent>

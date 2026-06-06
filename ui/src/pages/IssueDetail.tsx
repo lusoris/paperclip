@@ -136,6 +136,7 @@ import {
   EyeOff,
   Flag,
   FileCode2,
+  FolderSearch,
   Hexagon,
   ListTree,
   MessageSquare,
@@ -4066,6 +4067,19 @@ export function IssueDetail() {
           </div>
         );
       })()}
+
+      <div className="flex justify-start">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 gap-1.5 px-2 text-xs text-muted-foreground"
+          onClick={() => setFileViewerPromptOpen(true)}
+          title="Browse and search files in this issue's workspace"
+        >
+          <FolderSearch className="h-3.5 w-3.5" />
+          Browse workspace
+        </Button>
+      </div>
 
       <Separator />
 
