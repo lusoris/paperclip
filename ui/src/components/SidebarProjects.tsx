@@ -19,7 +19,7 @@ import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
-import { cn, projectRouteRef } from "../lib/utils";
+import { cn, projectRouteRef, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { resourceMembershipState, useResourceMembershipMutation, useResourceMemberships } from "../hooks/useResourceMemberships";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
@@ -142,7 +142,7 @@ function ProjectItem({
       )}
     >
       <ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="xs" />
-      <span className={cn("flex-1 truncate", rail && "sr-only")}>{project.name}</span>
+      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "flex-1 truncate"}>{project.name}</span>
       {!rail && project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
     </NavLink>
   );
@@ -151,8 +151,15 @@ function ProjectItem({
     <div className="flex flex-col gap-0.5">
       <div className="group/project relative flex items-center">
         {rail ? (
+          // Anchor the tooltip to a wrapper, not the NavLink: Radix `asChild`
+          // (Slot) drops React Router's function className, which would strip
+          // `flex` off the <a> and let the in-flow label stack under the icon,
+          // growing the row. Keeping the <a> out of Slot preserves a 1:1 row
+          // height with the expanded state so the icon never moves (PAP-10676).
           <Tooltip>
-            <TooltipTrigger asChild>{link}</TooltipTrigger>
+            <TooltipTrigger asChild>
+              <div className="min-w-0 flex-1">{link}</div>
+            </TooltipTrigger>
             <TooltipContent side="right">{project.name}</TooltipContent>
           </Tooltip>
         ) : (

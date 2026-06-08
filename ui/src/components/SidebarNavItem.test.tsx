@@ -78,23 +78,28 @@ describe("SidebarNavItem", () => {
     expect(link().getAttribute("aria-label")).toBeNull();
   });
 
-  it("collapses the label to sr-only and the badge to a dot in the rail", () => {
+  it("clips the label (kept in flow for 1:1 row height) and collapses the badge to a dot in the rail", () => {
     sidebarState.collapsed = true;
     render(<SidebarNavItem to="/inbox" label="Inbox" icon={Inbox} badge={28} badgeLabel="unread" />);
 
-    // Label stays in the a11y tree (sr-only, not display:none) so screen readers
-    // still announce it.
+    // The label stays in the DOM/a11y tree (not display:none) so screen readers
+    // still announce it. Unlike sr-only it is kept IN FLOW (zero-width, clipped,
+    // transparent) so it still contributes its line-height — that keeps the row
+    // exactly as tall as the expanded state, so the icon never shifts (PAP-10676).
     const label = Array.from(container.querySelectorAll("span")).find((el) => el.textContent === "Inbox");
     expect(label).toBeTruthy();
-    expect(label?.className).toContain("sr-only");
+    expect(label?.className).not.toContain("sr-only");
+    expect(label?.className).toContain("w-0");
+    expect(label?.className).toContain("overflow-hidden");
 
     // The numeric count is no longer rendered as text; it is a dot with an
     // accessible text equivalent on the link.
     expect(container.textContent).not.toContain("28 ");
     expect(link().getAttribute("aria-label")).toBe("Inbox, 28 unread");
 
-    // Tooltip wrapper present (radix marks the trigger).
-    expect(link().getAttribute("data-slot")).toBe("tooltip-trigger");
+    // Tooltip wraps the row; the trigger is the wrapper element so the NavLink's
+    // own flex className is preserved (PAP-10676), with the <a> nested inside it.
+    expect(link().parentElement?.getAttribute("data-slot")).toBe("tooltip-trigger");
   });
 
   it("keeps the full presentation while peeking even when collapsed", () => {

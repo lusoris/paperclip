@@ -314,12 +314,15 @@ describe("SidebarAgents", () => {
 
     await renderRailSidebarAgents();
 
-    // The agent name is preserved in the a11y tree (sr-only) and the row links
-    // become tooltip triggers; the per-row actions dropdown is dropped.
+    // The agent name is preserved in the a11y tree but kept in flow (zero-width,
+    // clipped) so the row stays 1:1 tall with the expanded state (PAP-10676); the
+    // row links become tooltip triggers and the per-row actions dropdown is dropped.
     const nameSpan = Array.from(container.querySelectorAll("span")).find((el) => el.textContent === "Alpha");
-    expect(nameSpan?.className).toContain("sr-only");
+    expect(nameSpan?.className).not.toContain("sr-only");
+    expect(nameSpan?.className).toContain("w-0");
+    expect(nameSpan?.className).toContain("overflow-hidden");
     const agentLink = container.querySelector('a[href^="/agents/"]:not([href="/agents/all"])');
-    expect(agentLink?.getAttribute("data-slot")).toBe("tooltip-trigger");
+    expect(agentLink?.parentElement?.getAttribute("data-slot")).toBe("tooltip-trigger");
     expect(container.querySelector('button[aria-label="Open actions for Alpha"]')).toBeNull();
 
     // The section header collapses to a divider (no caret / section menu).

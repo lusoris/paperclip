@@ -167,7 +167,7 @@ describe("SidebarShell", () => {
     expect(panel().className).toContain("z-30");
   });
 
-  it("drops the width transition for reduced-motion users", () => {
+  it("opens and closes instantly with no width transition (PAP-10676)", () => {
     act(() => {
       root.render(
         <SidebarShell open>
@@ -176,7 +176,9 @@ describe("SidebarShell", () => {
       );
     });
 
-    expect(panel().className).toContain("transition-[width]");
-    expect(panel().className).toContain("motion-reduce:transition-none");
+    // Open/close must be instant: the panel never animates its width, so neither
+    // the transition nor its reduced-motion fallback should be present.
+    expect(panel().className).not.toContain("transition-[width]");
+    expect(panel().className).not.toContain("motion-reduce:transition-none");
   });
 });

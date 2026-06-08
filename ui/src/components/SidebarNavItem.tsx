@@ -1,6 +1,6 @@
 import { NavLink } from "@/lib/router";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
-import { cn } from "../lib/utils";
+import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { useSidebar } from "../context/SidebarContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { LucideIcon } from "lucide-react";
@@ -98,7 +98,7 @@ export function SidebarNavItem({
           />
         )}
       </span>
-      <span className={cn("flex-1 truncate", rail && "sr-only")}>{label}</span>
+      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "flex-1 truncate"}>{label}</span>
       {!rail && textBadge && (
         <span
           className={cn(
@@ -137,9 +137,17 @@ export function SidebarNavItem({
 
   if (!rail) return link;
 
+  // The tooltip wraps a plain block element rather than the NavLink directly:
+  // Radix `asChild` (Slot) drops React Router's *function* className, which would
+  // strip `flex` off the <a> and render it as a block — the in-flow label would
+  // then stack under the icon and the row would grow. Anchoring the tooltip to a
+  // wrapper keeps the <a> rendering normally (flex), so the row stays 1:1 with
+  // the expanded state and the icon never moves (PAP-10676).
   return (
     <Tooltip>
-      <TooltipTrigger asChild>{link}</TooltipTrigger>
+      <TooltipTrigger asChild>
+        <div>{link}</div>
+      </TooltipTrigger>
       <TooltipContent side="right">{label}</TooltipContent>
     </Tooltip>
   );

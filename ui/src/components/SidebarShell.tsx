@@ -79,8 +79,12 @@ type SidebarShellProps = {
  *    is wider than the reserved spacer.
  *
  * The icon-alignment guarantee comes for free: collapsing is a pure width
- * animation with `overflow-hidden` clipping the labels; item padding/icon markup
+ * change with `overflow-hidden` clipping the labels; item padding/icon markup
  * are never touched, so the left-aligned icon stays pixel-identical.
+ *
+ * Opening/closing is intentionally instant (no width transition): the pin toggle
+ * and peek snap between rail and expanded widths so the content never appears to
+ * slide. Resizing the drag handle is likewise direct.
  */
 export function SidebarShell({
   children,
@@ -193,8 +197,8 @@ export function SidebarShell({
       <div
         className={cn(
           "absolute inset-y-0 left-0 flex flex-col overflow-hidden",
-          // Reuse the existing fast width animation; reduced-motion drops it.
-          !isResizing && "transition-[width] duration-100 ease-out motion-reduce:transition-none",
+          // Open/close is instant (PAP-10676): no width transition so the rail and
+          // expanded states snap without any sliding motion.
           // Overlay styling only while the panel is wider than its reserved
           // spacer (i.e. peeking) so it floats above content without reflow.
           isOverlay

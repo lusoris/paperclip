@@ -351,12 +351,15 @@ describe("SidebarProjects", () => {
   it("renders icon-only project rows with tooltips and no row actions in the rail", async () => {
     await renderRailSidebarProjects();
 
-    // Project names stay in the a11y tree (sr-only); rows become tooltip triggers
-    // and the per-row actions dropdown is dropped.
+    // Project names stay in the a11y tree but kept in flow (zero-width, clipped)
+    // so rows stay 1:1 tall with the expanded state (PAP-10676); rows become
+    // tooltip triggers and the per-row actions dropdown is dropped.
     const nameSpan = Array.from(container.querySelectorAll("span")).find((el) => el.textContent === "Bravo");
-    expect(nameSpan?.className).toContain("sr-only");
+    expect(nameSpan?.className).not.toContain("sr-only");
+    expect(nameSpan?.className).toContain("w-0");
+    expect(nameSpan?.className).toContain("overflow-hidden");
     const projectLink = container.querySelector('a[href^="/projects/"]');
-    expect(projectLink?.getAttribute("data-slot")).toBe("tooltip-trigger");
+    expect(projectLink?.parentElement?.getAttribute("data-slot")).toBe("tooltip-trigger");
     expect(container.querySelector('button[aria-label="Open actions for Bravo"]')).toBeNull();
     // The section header collapses to a divider (no section menu trigger).
     expect(container.querySelector('button[aria-label="Projects section actions"]')).toBeNull();

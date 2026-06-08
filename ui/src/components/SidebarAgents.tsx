@@ -21,7 +21,7 @@ import { authApi } from "../api/auth";
 import { heartbeatsApi } from "../api/heartbeats";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
-import { cn, agentRouteRef, agentUrl } from "../lib/utils";
+import { cn, agentRouteRef, agentUrl, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { useAgentOrder } from "../hooks/useAgentOrder";
 import { resourceMembershipState, useResourceMembershipMutation, useResourceMemberships } from "../hooks/useResourceMemberships";
 import {
@@ -144,7 +144,7 @@ function SidebarAgentItem({
       )}
     >
       <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
-      <span className={cn("flex-1 truncate", rail && "sr-only")}>{agent.name}</span>
+      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "flex-1 truncate"}>{agent.name}</span>
       {!rail && hasInvalidOrgChain ? (
         <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
       ) : null}
@@ -172,8 +172,15 @@ function SidebarAgentItem({
   return (
     <div className="group/agent relative flex items-center">
       {rail ? (
+        // Anchor the tooltip to a wrapper, not the NavLink: Radix `asChild` (Slot)
+        // drops React Router's function className, which would strip `flex` off the
+        // <a> and let the in-flow label stack under the icon, growing the row.
+        // Keeping the <a> out of Slot preserves a 1:1 row height with the expanded
+        // state so the icon never moves (PAP-10676).
         <Tooltip>
-          <TooltipTrigger asChild>{link}</TooltipTrigger>
+          <TooltipTrigger asChild>
+            <div className="min-w-0 flex-1">{link}</div>
+          </TooltipTrigger>
           <TooltipContent side="right">{agent.name}</TooltipContent>
         </Tooltip>
       ) : (
@@ -486,7 +493,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
             className="flex items-center gap-2.5 px-3 py-1.5 pointer-coarse:py-1 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
           >
             <Users className="shrink-0 h-3.5 w-3.5" />
-            <span className={cn(rail && "sr-only")}>See all agents</span>
+            <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>See all agents</span>
           </Link>
         );
         return rail ? (
