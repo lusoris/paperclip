@@ -17,7 +17,6 @@ import { useCompany } from "@/context/CompanyContext";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
-import { EnforcementBanner } from "@/components/EnforcementBanner";
 import { OverviewTab } from "./OverviewTab";
 import { ApplicationsTab } from "./ApplicationsTab";
 import { ConnectionsTab } from "./ConnectionsTab";
@@ -96,7 +95,6 @@ export function ToolsAccess() {
         <ClipboardList className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-xl font-bold text-foreground">Tools &amp; Access</h1>
       </div>
-      <EnforcementBanner companyId={selectedCompanyId} />
 
       <nav className="-mx-1 flex gap-1 overflow-x-auto whitespace-nowrap border-b border-border px-1">
         {TABS.map((tab) => {
