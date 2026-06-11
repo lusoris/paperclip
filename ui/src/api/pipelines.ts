@@ -1,6 +1,30 @@
 import type { Issue } from "@paperclipai/shared";
 import { api } from "./client";
 
+export type PipelineConnectionRef =
+  | string
+  | {
+      id?: string | null;
+      pipelineId?: string | null;
+      upstreamPipelineId?: string | null;
+      downstreamPipelineId?: string | null;
+      feedsIntoPipelineId?: string | null;
+      fedByPipelineId?: string | null;
+      direction?: string | null;
+    };
+
+export interface PipelineConnections {
+  upstreamPipelineIds?: string[];
+  downstreamPipelineIds?: string[];
+  feedsIntoPipelineId?: string | null;
+  downstreamPipelineId?: string | null;
+  feedsInto?: PipelineConnectionRef[];
+  fedBy?: PipelineConnectionRef[];
+  upstream?: PipelineConnectionRef[];
+  downstream?: PipelineConnectionRef[];
+  [key: string]: unknown;
+}
+
 export interface PipelineListItem {
   id: string;
   companyId: string;
@@ -12,7 +36,10 @@ export interface PipelineListItem {
   archivedAt: Date | string | null;
   stageCount: number;
   openCaseCount: number;
-  connections: { upstreamPipelineIds: string[]; downstreamPipelineIds: string[] };
+  attentionCount?: number | null;
+  inMotionCount?: number | null;
+  lastActivityAt?: Date | string | null;
+  connections?: PipelineConnections | null;
   createdAt: Date | string;
   updatedAt: Date | string;
 }
@@ -70,6 +97,15 @@ export interface PipelineCase {
   terminalChildCount?: number;
   createdAt?: Date | string;
   updatedAt?: Date | string;
+}
+
+export interface PipelineCaseActiveWork {
+  issueId: string;
+  issueIdentifier: string | null;
+  issueTitle: string;
+  agentId: string;
+  agentName: string;
+  startedAt: Date | string | null;
 }
 
 export interface PipelineCasePendingSuggestion {
@@ -164,6 +200,10 @@ export type PipelineBatchIngestResult =
 
 export const pipelinesApi = {
   list: (companyId: string) => api.get<PipelineListItem[]>(`/companies/${companyId}/pipelines`),
+  create: (
+    companyId: string,
+    data: { key: string; name: string; description?: string | null; projectId?: string | null },
+  ) => api.post<PipelineListItem & { stages?: PipelineStage[] }>(`/companies/${companyId}/pipelines`, data),
   get: (pipelineId: string) => api.get<PipelineDetail>(`/pipelines/${pipelineId}`),
   getIntakeForm: (pipelineId: string) => api.get<PipelineIntakeForm>(`/pipelines/${pipelineId}/intake-form`),
   listCases: (pipelineId: string, filters?: { parentCaseId?: string; terminal?: boolean }) => {
@@ -171,7 +211,7 @@ export const pipelinesApi = {
     if (filters?.parentCaseId) params.set("parentCaseId", filters.parentCaseId);
     if (filters?.terminal !== undefined) params.set("terminal", filters.terminal ? "true" : "false");
     const qs = params.toString();
-    return api.get<Array<{ case: PipelineCase; stage: PipelineStage }>>(`/pipelines/${pipelineId}/cases${qs ? `?${qs}` : ""}`);
+    return api.get<Array<{ case: PipelineCase; stage: PipelineStage; activeWork?: PipelineCaseActiveWork | null }>>(`/pipelines/${pipelineId}/cases${qs ? `?${qs}` : ""}`);
   },
   getCase: (caseId: string) => api.get<PipelineCaseDetail>(`/cases/${caseId}`),
   getCaseChildren: (pipelineId: string, caseId: string) => pipelinesApi.listCases(pipelineId, { parentCaseId: caseId }),
@@ -222,6 +262,7 @@ export const pipelinesApi = {
       reason?: string | null;
       leaseToken?: string | null;
       acceptSuggestionId?: string;
+      force?: boolean;
     },
   ) => api.post<unknown>(`/cases/${caseId}/transition`, data),
   ingestCasesBatch: (pipelineId: string, data: { items: Array<{ title: string; fields?: Record<string, unknown> }> }) =>

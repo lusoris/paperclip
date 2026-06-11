@@ -1,12 +1,25 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, useState } from "react";
 import type { AnchorHTMLAttributes, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PipelineBatchIngestResult, PipelineIntakeField } from "../api/pipelines";
-import { buildBatchPayload, GeneratedField, PipelineItemDetailView, plainBatchError, validateDraftRows } from "./Pipelines";
+import type { PipelineBatchIngestResult, PipelineIntakeField, PipelineListItem } from "../api/pipelines";
+import {
+  buildBatchPayload,
+  buildPipelineTableRows,
+  GeneratedField,
+  isGuardedTransitionAllowed,
+  PipelineItemDetailView,
+  pipelineKeyFromName,
+  PipelinesIndexTable,
+  pipelinesHaveConnectionData,
+  plainBatchError,
+  resolvePipelineTargetStageId,
+  validateDraftRows,
+  type PipelineViewMode,
+} from "./Pipelines";
 
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
@@ -370,5 +383,253 @@ describe("PipelineItemDetailView", () => {
     act(() => {
       root.unmount();
     });
+  });
+});
+
+function makeListPipeline(overrides: Partial<PipelineListItem> & { id: string; name: string }): PipelineListItem {
+  return {
+    companyId: "company-1",
+    key: overrides.id,
+    description: null,
+    projectId: null,
+    enforceTransitions: false,
+    archivedAt: null,
+    stageCount: 3,
+    openCaseCount: 0,
+    attentionCount: 0,
+    inMotionCount: 0,
+    lastActivityAt: null,
+    createdAt: "2026-06-10T12:00:00.000Z",
+    updatedAt: "2026-06-10T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function connectedPipelines(): PipelineListItem[] {
+  return [
+    makeListPipeline({
+      id: "release",
+      name: "Release",
+      description: "the launch this work is building toward",
+      openCaseCount: 1,
+      connections: { upstreamPipelineIds: [], downstreamPipelineIds: [] },
+    }),
+    makeListPipeline({
+      id: "features",
+      name: "Features",
+      attentionCount: 1,
+      openCaseCount: 4,
+      connections: { upstreamPipelineIds: [], downstreamPipelineIds: ["release"] },
+    }),
+    makeListPipeline({
+      id: "content",
+      name: "Content production",
+      attentionCount: 2,
+      inMotionCount: 3,
+      openCaseCount: 7,
+      connections: { upstreamPipelineIds: [], downstreamPipelineIds: ["features"] },
+    }),
+  ];
+}
+
+function renderIndexTable({
+  pipelines,
+  connectionsAvailable,
+  search = "",
+}: {
+  pipelines: PipelineListItem[];
+  connectionsAvailable: boolean;
+  search?: string;
+}) {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  function Harness() {
+    const [viewMode, setViewMode] = useState<PipelineViewMode>("nested");
+    const [query, setQuery] = useState(search);
+
+    return (
+      <PipelinesIndexTable
+        pipelines={pipelines}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        connectionsAvailable={connectionsAvailable}
+        search={query}
+        onSearchChange={setQuery}
+      />
+    );
+  }
+
+  act(() => {
+    root.render(<Harness />);
+  });
+
+  return { container, root };
+}
+
+describe("PipelinesIndexTable", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("nests connected pipelines under the work they feed", () => {
+    const { container, root } = renderIndexTable({
+      pipelines: connectedPipelines(),
+      connectionsAvailable: true,
+    });
+
+    const content = container.textContent ?? "";
+    expect(content.indexOf("Release")).toBeLessThan(content.indexOf("Features"));
+    expect(content.indexOf("Features")).toBeLessThan(content.indexOf("Content production"));
+    expect(content).toContain("feeds into Release");
+    expect(content).toContain("feeds into Features");
+
+    const collapse = container.querySelector<HTMLButtonElement>('button[aria-label="Collapse Release"]');
+    expect(collapse).not.toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("switches between nested and flat views when connection data exists", () => {
+    const { container, root } = renderIndexTable({
+      pipelines: connectedPipelines(),
+      connectionsAvailable: true,
+    });
+
+    expect(container.textContent).toContain("feeds into Release");
+
+    const flatButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Flat list"),
+    );
+    expect(flatButton).toBeTruthy();
+
+    act(() => {
+      flatButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).not.toContain("feeds into Release");
+    expect(container.textContent).not.toContain("feeds into Features");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("disables the nested toggle until connection data exists", () => {
+    const noConnections = [
+      makeListPipeline({ id: "support", name: "Support knowledge base" }),
+      makeListPipeline({ id: "sales", name: "Sales decks" }),
+    ].map((pipeline) => {
+      const { connections: _connections, ...rest } = pipeline;
+      return rest as PipelineListItem;
+    });
+    expect(pipelinesHaveConnectionData(noConnections)).toBe(false);
+
+    const { container, root } = renderIndexTable({
+      pipelines: noConnections,
+      connectionsAvailable: false,
+    });
+
+    const nestedButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Nested"),
+    ) as HTMLButtonElement | undefined;
+    expect(nestedButton?.disabled).toBe(true);
+    expect(container.textContent).toContain("Support knowledge base");
+    expect(container.textContent).toContain("Sales decks");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders attention and in-motion copy only when nonzero", () => {
+    const { container, root } = renderIndexTable({
+      pipelines: [
+        makeListPipeline({
+          id: "hiring",
+          name: "Hiring pipeline",
+          attentionCount: 3,
+          inMotionCount: 2,
+          openCaseCount: 18,
+        }),
+        makeListPipeline({
+          id: "recap",
+          name: "Quarterly board recap",
+          archivedAt: "2026-06-01T00:00:00.000Z",
+        }),
+      ],
+      connectionsAvailable: false,
+    });
+
+    const content = container.textContent ?? "";
+    expect(content).toContain("3 to review");
+    expect(content).toContain("2 in motion");
+    expect(content).toContain("18 open");
+    expect(content).toContain("Paused");
+    expect(content).not.toContain("0 to review");
+    expect(content).not.toContain("0 in motion");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows an empty state when search filters out every pipeline", () => {
+    const { container, root } = renderIndexTable({
+      pipelines: [makeListPipeline({ id: "press", name: "Press outreach" })],
+      connectionsAvailable: false,
+      search: "customer",
+    });
+
+    expect(container.textContent).toContain("No pipelines match your search.");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+});
+
+describe("pipeline index helpers", () => {
+  it("keeps collapsed branches out of the row list", () => {
+    const rows = buildPipelineTableRows(connectedPipelines(), {
+      viewMode: "nested",
+      collapsedPipelineIds: new Set(["features"]),
+    });
+
+    expect(rows.map((row) => row.pipeline.id)).toEqual(["release", "features"]);
+    expect(rows[1]?.expanded).toBe(false);
+  });
+
+  it("derives a url-safe key from the pipeline name", () => {
+    expect(pipelineKeyFromName("Content production!")).toBe("content-production");
+    expect(pipelineKeyFromName("   ")).toBe("pipeline");
+  });
+});
+
+describe("pipeline board guard helpers", () => {
+  const transitions = [
+    { fromStageId: "stage-a", toStageId: "stage-b" },
+    { fromStageId: "stage-b", toStageId: "stage-c" },
+  ];
+
+  it("allows configured moves and blocks skipped ones", () => {
+    expect(isGuardedTransitionAllowed(transitions, "stage-a", "stage-b")).toBe(true);
+    expect(isGuardedTransitionAllowed(transitions, "stage-a", "stage-c")).toBe(false);
+    expect(isGuardedTransitionAllowed(transitions, "stage-a", "stage-a")).toBe(true);
+    expect(isGuardedTransitionAllowed([], "stage-a", "stage-c")).toBe(true);
+    expect(isGuardedTransitionAllowed(transitions, null, "stage-b")).toBe(false);
+  });
+
+  it("resolves drop targets from columns or sibling items", () => {
+    const columns = new Set(["stage-a", "stage-b"]);
+    const caseToColumn = new Map([["item-1", "stage-b"]]);
+
+    expect(resolvePipelineTargetStageId("stage-a", columns, caseToColumn)).toBe("stage-a");
+    expect(resolvePipelineTargetStageId("item-1", columns, caseToColumn)).toBe("stage-b");
+    expect(resolvePipelineTargetStageId("missing", columns, caseToColumn)).toBeNull();
   });
 });

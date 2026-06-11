@@ -354,6 +354,9 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
         pipeline: pipelines,
         stageCount: sql<number>`count(distinct ${pipelineStages.id})::int`,
         openCaseCount: sql<number>`count(distinct ${pipelineCases.id}) filter (where ${pipelineCases.terminalKind} is null)::int`,
+        attentionCount: sql<number>`count(distinct ${pipelineCases.id}) filter (where ${pipelineCases.terminalKind} is null and (${pipelineCases.pendingSuggestion} is not null or (${pipelineCases.stageId} = ${pipelineStages.id} and ${pipelineStages.kind} = 'review')))::int`,
+        inMotionCount: sql<number>`count(distinct ${pipelineCases.id}) filter (where ${pipelineCases.terminalKind} is null and ${pipelineCases.stageId} = ${pipelineStages.id} and ${pipelineStages.kind} = 'working')::int`,
+        lastActivityAt: sql<string | null>`max(${pipelineCases.updatedAt})`,
       })
       .from(pipelines)
       .leftJoin(pipelineStages, eq(pipelineStages.pipelineId, pipelines.id))
@@ -366,6 +369,9 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       ...row.pipeline,
       stageCount: row.stageCount,
       openCaseCount: row.openCaseCount,
+      attentionCount: row.attentionCount,
+      inMotionCount: row.inMotionCount,
+      lastActivityAt: row.lastActivityAt,
       connections: connections.get(row.pipeline.id) ?? { upstreamPipelineIds: [], downstreamPipelineIds: [] },
     })));
   });

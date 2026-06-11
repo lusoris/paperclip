@@ -457,8 +457,24 @@ describeEmbeddedPostgres("pipeline aggregation routes", () => {
       .send({ caseKey: "blog-child", title: "Blog child", parentCaseId: contentCase.body.case.id })
       .expect(201);
 
+    // Move one case into a working stage and one into a review stage so the
+    // list response exposes board-facing activity counts.
+    await board
+      .post(`/api/cases/${releaseCase.body.case.id}/transition`)
+      .send({ toStageKey: "drafting", expectedVersion: releaseCase.body.case.version })
+      .expect(200);
+    await board
+      .post(`/api/cases/${contentCase.body.case.id}/transition`)
+      .send({ toStageKey: "review_human", expectedVersion: contentCase.body.case.version })
+      .expect(200);
+
     const listed = await board.get(`/api/companies/${company.id}/pipelines`).expect(200);
     const byId = new Map(listed.body.map((row: { id: string }) => [row.id, row]));
+    expect(byId.get(release.id)).toMatchObject({ openCaseCount: 1, attentionCount: 0, inMotionCount: 1 });
+    expect(byId.get(content.id)).toMatchObject({ openCaseCount: 2, attentionCount: 1, inMotionCount: 0 });
+    expect(byId.get(assets.id)).toMatchObject({ openCaseCount: 1, attentionCount: 0, inMotionCount: 0 });
+    expect(byId.get(lonely.id)).toMatchObject({ openCaseCount: 0, attentionCount: 0, inMotionCount: 0, lastActivityAt: null });
+    expect((byId.get(content.id) as { lastActivityAt: unknown }).lastActivityAt).toBeTruthy();
     expect((byId.get(release.id) as { connections: unknown }).connections).toEqual({
       upstreamPipelineIds: [],
       downstreamPipelineIds: [content.id],

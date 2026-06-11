@@ -1,6 +1,19 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Check, ChevronDown, ChevronRight, ChevronUp, GitBranch, Info, MessageSquare, MoreHorizontal, Plus, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, ChevronUp, GitBranch, Hexagon, Info, MessageSquare, MoreHorizontal, Plus, Search, Trash2, X } from "lucide-react";
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -20,18 +33,24 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
+import { ApiError } from "../api/client";
 import {
   pipelinesApi,
   type PipelineBatchIngestResult,
   type PipelineCase,
+  type PipelineCaseActiveWork,
   type PipelineCaseDetail,
   type PipelineCaseEvent,
   type PipelineCaseIssueLinkWithIssue,
+  type PipelineConnectionRef,
+  type PipelineConnections,
   type PipelineIntakeField,
   type PipelineIntakeForm,
+  type PipelineListItem,
   type PipelineStage,
 } from "../api/pipelines";
 import { issuesApi } from "../api/issues";
+import { EmptyState } from "../components/EmptyState";
 import { IssueChatThread } from "../components/IssueChatThread";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -45,7 +64,7 @@ import {
   itemHasChangedNotice,
 } from "../lib/pipeline-item-detail";
 import { queryKeys } from "../lib/queryKeys";
-import { cn } from "../lib/utils";
+import { cn, formatNumber } from "../lib/utils";
 
 interface DraftRow {
   id: string;
@@ -134,112 +153,1183 @@ export function Pipelines() {
   return <PipelinesIndex />;
 }
 
+// ---------------------------------------------------------------------------
+// Pipelines index
+// ---------------------------------------------------------------------------
+
+export type PipelineViewMode = "nested" | "flat";
+
+export interface PipelineTableRow {
+  pipeline: PipelineListItem;
+  depth: number;
+  feedsIntoName: string | null;
+  hasChildren: boolean;
+  expanded: boolean;
+}
+
+function connectionId(ref: PipelineConnectionRef | null | undefined): string | null {
+  if (!ref) return null;
+  if (typeof ref === "string") return ref;
+  return (
+    ref.pipelineId ??
+    ref.downstreamPipelineId ??
+    ref.feedsIntoPipelineId ??
+    ref.id ??
+    null
+  );
+}
+
+function connectionListIds(refs: PipelineConnectionRef[] | null | undefined): string[] {
+  if (!Array.isArray(refs)) return [];
+  return refs.map(connectionId).filter((id): id is string => Boolean(id));
+}
+
+function downstreamPipelineIds(connections: PipelineConnections | null | undefined): string[] {
+  if (!connections) return [];
+
+  const ids = [
+    connections.feedsIntoPipelineId,
+    connections.downstreamPipelineId,
+    ...(connections.downstreamPipelineIds ?? []),
+    ...connectionListIds(connections.feedsInto),
+    ...connectionListIds(connections.downstream),
+  ];
+
+  return ids.filter((id): id is string => Boolean(id));
+}
+
+function hasConnectionsField(pipeline: PipelineListItem): boolean {
+  return Object.prototype.hasOwnProperty.call(pipeline, "connections");
+}
+
+function pipelineOpenItemCount(pipeline: PipelineListItem) {
+  return pipeline.openCaseCount ?? 0;
+}
+
+function pipelineAttentionCount(pipeline: PipelineListItem) {
+  return pipeline.attentionCount ?? 0;
+}
+
+function pipelineInMotionCount(pipeline: PipelineListItem) {
+  return pipeline.inMotionCount ?? 0;
+}
+
+function pipelineActivityTime(pipeline: PipelineListItem) {
+  return pipeline.lastActivityAt ?? pipeline.updatedAt ?? pipeline.createdAt ?? null;
+}
+
+function compareByInputOrder(order: Map<string, number>) {
+  return (left: PipelineListItem, right: PipelineListItem) =>
+    (order.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(right.id) ?? Number.MAX_SAFE_INTEGER);
+}
+
+export function pipelinesHaveConnectionData(pipelines: PipelineListItem[]) {
+  return pipelines.some(hasConnectionsField);
+}
+
+export function buildPipelineTableRows(
+  pipelines: PipelineListItem[],
+  options: {
+    viewMode: PipelineViewMode;
+    collapsedPipelineIds?: Set<string>;
+  },
+): PipelineTableRow[] {
+  if (options.viewMode === "flat") {
+    return pipelines.map((pipeline) => ({
+      pipeline,
+      depth: 0,
+      feedsIntoName: null,
+      hasChildren: false,
+      expanded: true,
+    }));
+  }
+
+  const pipelinesById = new Map(pipelines.map((pipeline) => [pipeline.id, pipeline]));
+  const inputOrder = new Map(pipelines.map((pipeline, index) => [pipeline.id, index]));
+  const parentByChild = new Map<string, string>();
+
+  for (const pipeline of pipelines) {
+    const downstreamId = downstreamPipelineIds(pipeline.connections).find((id) => pipelinesById.has(id));
+    if (downstreamId && downstreamId !== pipeline.id) {
+      parentByChild.set(pipeline.id, downstreamId);
+    }
+  }
+
+  const childrenByParent = new Map<string, PipelineListItem[]>();
+  for (const [childId, parentId] of parentByChild.entries()) {
+    const child = pipelinesById.get(childId);
+    if (!child) continue;
+    const children = childrenByParent.get(parentId) ?? [];
+    children.push(child);
+    childrenByParent.set(parentId, children);
+  }
+  for (const children of childrenByParent.values()) {
+    children.sort(compareByInputOrder(inputOrder));
+  }
+
+  const rows: PipelineTableRow[] = [];
+  const visited = new Set<string>();
+  const collapsed = options.collapsedPipelineIds ?? new Set<string>();
+
+  function markSubtreeVisited(pipeline: PipelineListItem) {
+    for (const child of childrenByParent.get(pipeline.id) ?? []) {
+      if (visited.has(child.id)) continue;
+      visited.add(child.id);
+      markSubtreeVisited(child);
+    }
+  }
+
+  function visit(pipeline: PipelineListItem, depth: number, stack: Set<string>) {
+    if (visited.has(pipeline.id) || stack.has(pipeline.id)) return;
+    visited.add(pipeline.id);
+
+    const children = childrenByParent.get(pipeline.id) ?? [];
+    const parentId = parentByChild.get(pipeline.id);
+    rows.push({
+      pipeline,
+      depth,
+      feedsIntoName: parentId ? pipelinesById.get(parentId)?.name ?? null : null,
+      hasChildren: children.length > 0,
+      expanded: !collapsed.has(pipeline.id),
+    });
+
+    if (collapsed.has(pipeline.id)) {
+      markSubtreeVisited(pipeline);
+      return;
+    }
+
+    const nextStack = new Set(stack);
+    nextStack.add(pipeline.id);
+    for (const child of children) {
+      visit(child, depth + 1, nextStack);
+    }
+  }
+
+  const roots = pipelines
+    .filter((pipeline) => !parentByChild.has(pipeline.id))
+    .sort(compareByInputOrder(inputOrder));
+  for (const root of roots) visit(root, 0, new Set<string>());
+  for (const pipeline of pipelines) visit(pipeline, 0, new Set<string>());
+
+  return rows;
+}
+
+function formatOpenItems(count: number) {
+  return `${formatNumber(count)} open`;
+}
+
+function formatPipelineActivity(value: string | Date | null) {
+  if (!value) return "No activity";
+  const then = new Date(value).getTime();
+  if (!Number.isFinite(then)) return "No activity";
+  const diffSeconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (diffSeconds < 60) return "just now";
+  const diffMinutes = Math.round(diffSeconds / 60);
+  if (diffMinutes < 60) return `${diffMinutes} min ago`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) return diffHours === 1 ? "1 hr ago" : `${diffHours} hr ago`;
+  const diffDays = Math.round(diffHours / 24);
+  if (diffDays === 1) return "yesterday";
+  if (diffDays < 7) return `${diffDays} days ago`;
+  if (diffDays < 14) return "last week";
+  if (diffDays < 30) return `${Math.round(diffDays / 7)} weeks ago`;
+  return new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function PipelineStatusChip({ archivedAt }: { archivedAt: Date | string | null }) {
+  const paused = Boolean(archivedAt);
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold",
+        paused
+          ? "border-muted-foreground/20 bg-muted text-muted-foreground"
+          : "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300",
+      )}
+    >
+      {paused ? "Paused" : "Active"}
+    </span>
+  );
+}
+
+interface PipelinesIndexTableProps {
+  pipelines: PipelineListItem[];
+  viewMode: PipelineViewMode;
+  onViewModeChange: (mode: PipelineViewMode) => void;
+  connectionsAvailable: boolean;
+  search: string;
+  onSearchChange: (search: string) => void;
+}
+
+export function PipelinesIndexTable({
+  pipelines,
+  viewMode,
+  onViewModeChange,
+  connectionsAvailable,
+  search,
+  onSearchChange,
+}: PipelinesIndexTableProps) {
+  const [collapsedPipelineIds, setCollapsedPipelineIds] = useState<Set<string>>(() => new Set());
+  const filteredPipelines = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return pipelines;
+    return pipelines.filter((pipeline) => pipeline.name.toLowerCase().includes(q));
+  }, [pipelines, search]);
+  const effectiveViewMode = connectionsAvailable ? viewMode : "flat";
+  const rows = useMemo(
+    () =>
+      buildPipelineTableRows(filteredPipelines, {
+        viewMode: effectiveViewMode,
+        collapsedPipelineIds,
+      }),
+    [collapsedPipelineIds, effectiveViewMode, filteredPipelines],
+  );
+
+  const togglePipeline = (pipelineId: string) => {
+    setCollapsedPipelineIds((current) => {
+      const next = new Set(current);
+      if (next.has(pipelineId)) next.delete(pipelineId);
+      else next.add(pipelineId);
+      return next;
+    });
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 border-y border-border py-4 lg:flex-row lg:items-center lg:justify-between">
+        <label className="relative block w-full max-w-md">
+          <span className="sr-only">Search pipelines</span>
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(event) => onSearchChange(event.target.value)}
+            placeholder="Search pipelines"
+            className="h-10 pl-9"
+          />
+        </label>
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <span>View</span>
+          <div className="inline-flex overflow-hidden rounded-md border border-border bg-background">
+            <button
+              type="button"
+              className={cn(
+                "min-w-20 px-4 py-2 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+                effectiveViewMode === "nested" && connectionsAvailable
+                  ? "bg-foreground text-background"
+                  : "text-muted-foreground hover:bg-accent/50",
+              )}
+              disabled={!connectionsAvailable}
+              onClick={() => onViewModeChange("nested")}
+            >
+              Nested
+            </button>
+            <button
+              type="button"
+              className={cn(
+                "min-w-20 border-l border-border px-4 py-2 text-sm font-semibold transition-colors",
+                effectiveViewMode === "flat"
+                  ? "bg-foreground text-background"
+                  : "text-muted-foreground hover:bg-accent/50",
+              )}
+              onClick={() => onViewModeChange("flat")}
+            >
+              Flat list
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {rows.length === 0 ? (
+        <EmptyState icon={Hexagon} message="No pipelines match your search." />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[780px] border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-border text-left text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                <th className="py-2 pl-3 pr-4">Name</th>
+                <th className="px-4 py-2">Attention</th>
+                <th className="px-4 py-2">Open items</th>
+                <th className="px-4 py-2">Status</th>
+                <th className="px-4 py-2">Last activity</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const attentionCount = pipelineAttentionCount(row.pipeline);
+                const inMotionCount = pipelineInMotionCount(row.pipeline);
+                return (
+                  <tr key={row.pipeline.id} className="h-10 border-b border-border/70">
+                    <td className="pl-3 pr-4">
+                      <div className="flex min-w-0 items-center gap-2" style={{ paddingLeft: row.depth * 28 }}>
+                        {row.hasChildren ? (
+                          <button
+                            type="button"
+                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                            aria-label={row.expanded ? `Collapse ${row.pipeline.name}` : `Expand ${row.pipeline.name}`}
+                            onClick={() => togglePipeline(row.pipeline.id)}
+                          >
+                            {row.expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                          </button>
+                        ) : (
+                          <span className="h-6 w-6 shrink-0" aria-hidden="true" />
+                        )}
+                        <div className="min-w-0">
+                          <Link
+                            to={`/pipelines/${row.pipeline.id}`}
+                            className="font-semibold text-foreground hover:underline"
+                          >
+                            {row.pipeline.name}
+                          </Link>
+                          {row.feedsIntoName ? (
+                            <span className="ml-2 text-muted-foreground">feeds into {row.feedsIntoName}</span>
+                          ) : row.pipeline.description ? (
+                            <span className="ml-2 text-muted-foreground">- {row.pipeline.description}</span>
+                          ) : null}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 text-sm">
+                      <div className="flex items-center gap-3 whitespace-nowrap">
+                        {attentionCount > 0 ? (
+                          <span className="inline-flex items-center gap-1.5 font-semibold text-red-700 dark:text-red-400">
+                            <span className="h-2 w-2 rounded-full bg-red-600" aria-hidden="true" />
+                            {formatNumber(attentionCount)} to review
+                          </span>
+                        ) : null}
+                        {inMotionCount > 0 ? (
+                          <span className="text-muted-foreground">
+                            {formatNumber(inMotionCount)} in motion
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="px-4 text-muted-foreground">{formatOpenItems(pipelineOpenItemCount(row.pipeline))}</td>
+                    <td className="px-4"><PipelineStatusChip archivedAt={row.pipeline.archivedAt} /></td>
+                    <td className="px-4 text-muted-foreground">{formatPipelineActivity(pipelineActivityTime(row.pipeline))}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p className="mt-4 text-sm text-muted-foreground">
+            Showing {formatNumber(rows.length)} of {formatNumber(filteredPipelines.length)}.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NewPipelineDialog({
+  open,
+  onOpenChange,
+  onSubmit,
+  pending,
+  error,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSubmit: (data: { name: string; description: string }) => void;
+  pending: boolean;
+  error: string | null;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setName("");
+      setDescription("");
+    }
+  }, [open]);
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+    onSubmit({ name: trimmedName, description: description.trim() });
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <form onSubmit={submit} className="space-y-4">
+          <DialogHeader>
+            <DialogTitle>New pipeline</DialogTitle>
+            <DialogDescription>Name the pipeline and add a short description.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <label className="block space-y-1.5 text-sm font-medium">
+              <span>Name</span>
+              <Input value={name} onChange={(event) => setName(event.target.value)} autoFocus />
+            </label>
+            <label className="block space-y-1.5 text-sm font-medium">
+              <span>Description</span>
+              <Textarea
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                rows={3}
+              />
+            </label>
+            {error ? <p className="text-sm text-destructive">{error}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={pending || !name.trim()}>
+              {pending ? "Creating..." : "Create pipeline"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function pipelineKeyFromName(name: string) {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80)
+    .replace(/-+$/g, "");
+  return slug || "pipeline";
+}
+
 function PipelinesIndex() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [search, setSearch] = useState("");
+  const [viewMode, setViewMode] = useState<PipelineViewMode>("nested");
+  const [newPipelineOpen, setNewPipelineOpen] = useState(false);
+
   useEffect(() => setBreadcrumbs([{ label: "Pipelines" }]), [setBreadcrumbs]);
 
-  const pipelines = useQuery({
+  const pipelinesQuery = useQuery({
     queryKey: selectedCompanyId ? queryKeys.pipelines.list(selectedCompanyId) : ["pipelines", "missing-company"],
     queryFn: () => pipelinesApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
 
+  const createPipeline = useMutation({
+    mutationFn: async (data: { name: string; description: string }) => {
+      const baseKey = pipelineKeyFromName(data.name);
+      try {
+        return await pipelinesApi.create(selectedCompanyId!, {
+          key: baseKey,
+          name: data.name,
+          description: data.description || null,
+        });
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 409) {
+          return await pipelinesApi.create(selectedCompanyId!, {
+            key: `${baseKey}-${Date.now().toString(36)}`,
+            name: data.name,
+            description: data.description || null,
+          });
+        }
+        throw error;
+      }
+    },
+    onSuccess: async (pipeline) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.list(selectedCompanyId!) });
+      setNewPipelineOpen(false);
+      navigate(`/pipelines/${pipeline.id}/settings`);
+    },
+  });
+
   if (!selectedCompanyId) {
     return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Select a company to view pipelines.</div>;
   }
-  if (pipelines.isLoading) return <PageSkeleton />;
+  if (pipelinesQuery.isLoading) return <PageSkeleton />;
+
+  const pipelines = pipelinesQuery.data ?? [];
+  const connectionsAvailable = pipelinesHaveConnectionData(pipelines);
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
-      <div className="mb-6">
-        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Work</p>
-        <h1 className="text-2xl font-semibold text-foreground">Pipelines</h1>
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Work</p>
+          <h1 className="text-2xl font-semibold text-foreground">Pipelines</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {formatNumber(pipelines.length)} pipeline{pipelines.length === 1 ? "" : "s"}. Connected ones are grouped under the work they feed.
+          </p>
+        </div>
+        <Button onClick={() => setNewPipelineOpen(true)}>
+          <Plus className="mr-2 h-4 w-4" />
+          New pipeline
+        </Button>
       </div>
-      <div className="divide-y border-y border-border">
-        {(pipelines.data ?? []).map((pipeline) => (
-          <Link
-            key={pipeline.id}
-            to={`/pipelines/${pipeline.id}`}
-            className="grid grid-cols-[1fr_auto] items-center gap-4 py-3 text-sm hover:bg-muted/40"
-          >
-            <span>
-              <span className="block font-medium text-foreground">{pipeline.name}</span>
-              {pipeline.description ? (
-                <span className="block text-xs text-muted-foreground">{pipeline.description}</span>
-              ) : null}
-            </span>
-            <span className="text-xs text-muted-foreground">{pipeline.openCaseCount} open</span>
-          </Link>
-        ))}
-      </div>
-      {pipelines.data?.length === 0 ? (
-        <p className="py-10 text-sm text-muted-foreground">No pipelines yet.</p>
+
+      {pipelinesQuery.error ? (
+        <p className="mb-4 text-sm text-destructive">Could not load pipelines.</p>
       ) : null}
+
+      {pipelines.length === 0 && !pipelinesQuery.error ? (
+        <EmptyState
+          icon={Hexagon}
+          message="No pipelines yet."
+          action="New pipeline"
+          onAction={() => setNewPipelineOpen(true)}
+        />
+      ) : (
+        <PipelinesIndexTable
+          pipelines={pipelines}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          connectionsAvailable={connectionsAvailable}
+          search={search}
+          onSearchChange={setSearch}
+        />
+      )}
+
+      <NewPipelineDialog
+        open={newPipelineOpen}
+        onOpenChange={(open) => {
+          setNewPipelineOpen(open);
+          if (!open) createPipeline.reset();
+        }}
+        onSubmit={(data) => createPipeline.mutate(data)}
+        pending={createPipeline.isPending}
+        error={createPipeline.error ? "Could not create the pipeline. Try a different name." : null}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline board
+// ---------------------------------------------------------------------------
+
+const UNASSIGNED_STAGE_ID = "__pipeline_unassigned_stage";
+const UNASSIGNED_STAGE_NAME = "Unassigned";
+
+type BoardCase = PipelineCase & { activeWork?: PipelineCaseActiveWork | null };
+
+type PipelineTransitionEdge = { fromStageId: string; toStageId: string; label?: string | null };
+
+function asText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const next = value.trim();
+  return next.length === 0 ? null : next;
+}
+
+function asBoardBoolean(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value > 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on";
+  }
+  return false;
+}
+
+function asPositiveInteger(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
+  }
+  return null;
+}
+
+export function getCaseTitle(caseItem: BoardCase) {
+  const fields = caseItem.fields ?? {};
+  const candidateKeys = [
+    "title",
+    "name",
+    "summary",
+    "subject",
+    "item_title",
+    "itemTitle",
+    "issueTitle",
+    "ticketTitle",
+  ] as const;
+
+  const direct = asText(caseItem.title);
+  if (direct) return direct;
+  for (const key of candidateKeys) {
+    const value = asText(fields[key]);
+    if (value) return value;
+  }
+  return "Untitled item";
+}
+
+export function isWorkingCase(caseItem: BoardCase) {
+  if (caseItem.activeWork && typeof caseItem.activeWork === "object") return true;
+  const fields = caseItem.fields ?? {};
+  return (
+    asBoardBoolean(fields.activeWork) ||
+    asBoardBoolean(fields.active_work) ||
+    asBoardBoolean(fields.isActiveWork) ||
+    asBoardBoolean(fields.working) ||
+    asBoardBoolean(fields.isWorking)
+  );
+}
+
+export function getOpenBlockerCount(caseItem: BoardCase) {
+  const fields = caseItem.fields ?? {};
+  return asPositiveInteger(fields.openBlockers) ?? 0;
+}
+
+export function hasThisChanged(caseItem: BoardCase) {
+  const fields = caseItem.fields ?? {};
+  if (fields.changeAcknowledgedAt) return false;
+  return (
+    asBoardBoolean(fields.thisChanged) ||
+    asBoardBoolean(fields["this changed"]) ||
+    asBoardBoolean(fields.this_changed) ||
+    asBoardBoolean(fields.hasThisChanged) ||
+    Boolean(fields.upstreamChanged) ||
+    Boolean(fields.upstreamDrift)
+  );
+}
+
+export function getChildrenSummaryCount(caseItem: BoardCase) {
+  if (typeof caseItem.childCount === "number" && caseItem.childCount > 0) {
+    return Math.floor(caseItem.childCount);
+  }
+  const fields = caseItem.fields ?? {};
+  const fromFields = asPositiveInteger(fields.childrenSummary);
+  if (fromFields != null && fromFields > 0) return fromFields;
+  return null;
+}
+
+export function createUnassignedStage(pipelineId: string): PipelineStage {
+  return {
+    id: UNASSIGNED_STAGE_ID,
+    pipelineId,
+    key: "__unassigned",
+    name: UNASSIGNED_STAGE_NAME,
+    kind: "open",
+    position: Number.MAX_SAFE_INTEGER,
+    config: {},
+  };
+}
+
+export function isGuardedTransitionAllowed(
+  transitions: PipelineTransitionEdge[],
+  sourceStageId: string | null,
+  targetStageId: string,
+) {
+  if (!transitions.length) return true;
+  if (!sourceStageId) return false;
+  if (sourceStageId === targetStageId) return true;
+
+  for (const transition of transitions) {
+    if (transition.fromStageId === sourceStageId && transition.toStageId === targetStageId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function resolvePipelineTargetStageId(
+  overId: string,
+  columns: Set<string>,
+  caseToColumnId: Map<string, string>,
+) {
+  if (columns.has(overId)) return overId;
+  return caseToColumnId.get(overId) ?? null;
+}
+
+function PipelineCaseCard({
+  caseItem,
+  isOverlay = false,
+}: {
+  caseItem: BoardCase;
+  isOverlay?: boolean;
+}) {
+  const title = getCaseTitle(caseItem);
+  const isWorking = isWorkingCase(caseItem);
+  const blockerCount = getOpenBlockerCount(caseItem);
+  const hasNeedsAttention = blockerCount > 0;
+  const hasChangedNotice = hasThisChanged(caseItem);
+  const childrenSummary = getChildrenSummaryCount(caseItem);
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: caseItem.id, data: { caseItem } });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className={`rounded-md border bg-card px-3 py-2 text-sm ${
+        isDragging && !isOverlay ? "opacity-40" : ""
+      } ${isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm"}`}
+    >
+      <Link
+        to={`/pipelines/${caseItem.pipelineId}/items/${caseItem.id}`}
+        onClick={(event) => {
+          if (isDragging) event.preventDefault();
+        }}
+        className="block text-inherit no-underline"
+      >
+        <p className="font-medium leading-snug text-foreground">{title}</p>
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {isWorking ? (
+            <span className="relative inline-flex items-center rounded-full border border-emerald-400/40 bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-300/30 dark:bg-emerald-900/30 dark:text-emerald-300">
+              <span className="absolute -left-1 -top-1 h-2 w-2 animate-pulse rounded-full bg-emerald-500"></span>
+              Working
+            </span>
+          ) : null}
+          {hasNeedsAttention ? (
+            <span className="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-300/30 dark:bg-amber-900/25 dark:text-amber-300">
+              Needs attention
+            </span>
+          ) : null}
+          {hasChangedNotice ? (
+            <span className="inline-flex items-center rounded-full border border-indigo-400/40 bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:border-indigo-300/30 dark:bg-indigo-900/25 dark:text-indigo-300">
+              This changed
+            </span>
+          ) : null}
+        </div>
+        {childrenSummary != null ? (
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            Built from {formatNumber(childrenSummary)} {childrenSummary === 1 ? "item" : "items"}
+          </p>
+        ) : null}
+      </Link>
+    </div>
+  );
+}
+
+function PipelineBoardColumn({
+  stage,
+  cases,
+  onColumnEmpty,
+  isDragTargeted,
+  isDragBlocked,
+}: {
+  stage: PipelineStage;
+  cases: BoardCase[];
+  onColumnEmpty?: (stage: PipelineStage) => string;
+  isDragTargeted?: boolean;
+  isDragBlocked?: boolean;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: stage.id });
+
+  const isBlockedDropTarget = !!isDragTargeted && !!isDragBlocked;
+
+  return (
+    <div
+      key={stage.id}
+      aria-label={`${stage.name} column`}
+      className={`flex min-w-[260px] max-w-[320px] shrink-0 flex-col rounded-md border border-border ${isBlockedDropTarget ? "ring-1 ring-red-500/45" : ""}`}
+    >
+      <div className="flex items-center justify-between border-b border-border px-3 py-2 text-sm font-semibold text-muted-foreground">
+        <span>{stage.name}</span>
+        <span>{cases.length}</span>
+      </div>
+      <div
+        ref={setNodeRef}
+        className={`min-h-[160px] flex-1 space-y-2 rounded-b-md px-2 py-2 transition-colors ${
+          isBlockedDropTarget ? "bg-red-50 dark:bg-red-950/30" : isOver ? "bg-accent/40" : ""
+        }`}
+      >
+        {isBlockedDropTarget ? (
+          <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200">
+            This move skips the normal flow
+          </p>
+        ) : null}
+        <SortableContext items={cases.map((entry) => entry.id)} strategy={verticalListSortingStrategy}>
+          {cases.length > 0 ? (
+            cases.map((item) => <PipelineCaseCard key={item.id} caseItem={item} />)
+          ) : (
+            <div className="rounded-md border border-dashed border-border px-3 py-8 text-center text-xs text-muted-foreground">
+              {onColumnEmpty ? onColumnEmpty(stage) : "Empty"}
+            </div>
+          )}
+        </SortableContext>
+      </div>
     </div>
   );
 }
 
 function PipelineBoard({ pipelineId }: { pipelineId: string }) {
   const { setBreadcrumbs } = useBreadcrumbs();
-  const pipeline = useQuery({
+  const { pushToast } = useToastActions();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
+  const [activeOverId, setActiveOverId] = useState<string | null>(null);
+  const [pendingMove, setPendingMove] = useState<{
+    caseId: string;
+    caseVersion: number;
+    itemTitle: string;
+    sourceName: string;
+    targetStageId: string;
+    targetStageKey: string;
+    targetName: string;
+    allowed: boolean;
+  } | null>(null);
+  const [overrideReason, setOverrideReason] = useState("");
+
+  const pipelineQuery = useQuery({
     queryKey: queryKeys.pipelines.detail(pipelineId),
     queryFn: () => pipelinesApi.get(pipelineId),
   });
-  const items = useQuery({
+
+  const casesQuery = useQuery({
     queryKey: queryKeys.pipelines.cases(pipelineId),
     queryFn: () => pipelinesApi.listCases(pipelineId),
   });
 
+  const pipeline = pipelineQuery.data;
+  const cases = useMemo<BoardCase[]>(
+    () => (casesQuery.data ?? []).map((row) => ({ ...row.case, activeWork: row.activeWork ?? null })),
+    [casesQuery.data],
+  );
+
+  const orderedStages = useMemo(() => {
+    if (!pipeline?.stages) return [] as PipelineStage[];
+    return [...pipeline.stages].sort((left, right) => left.position - right.position);
+  }, [pipeline?.stages]);
+
+  const stageIds = useMemo(() => new Set(orderedStages.map((stage) => stage.id)), [orderedStages]);
+
+  const boardColumns = useMemo(() => {
+    const byStage = new Map<string, BoardCase[]>();
+    const caseToColumn = new Map<string, string>();
+    const caseById = new Map<string, BoardCase>();
+
+    for (const stage of orderedStages) {
+      byStage.set(stage.id, []);
+    }
+
+    const unassigned: BoardCase[] = [];
+    for (const caseItem of cases) {
+      const stageId = caseItem.stageId && stageIds.has(caseItem.stageId) ? caseItem.stageId : UNASSIGNED_STAGE_ID;
+      if (stageId === UNASSIGNED_STAGE_ID) {
+        unassigned.push(caseItem);
+      } else {
+        byStage.get(stageId)!.push(caseItem);
+      }
+      caseToColumn.set(caseItem.id, stageId);
+      caseById.set(caseItem.id, caseItem);
+    }
+
+    const columns = [...orderedStages];
+    if (unassigned.length > 0) {
+      byStage.set(UNASSIGNED_STAGE_ID, unassigned);
+      columns.push(createUnassignedStage(pipelineId));
+    }
+
+    return { columns, byStage, caseToColumn, caseById };
+  }, [orderedStages, cases, stageIds, pipelineId]);
+
+  const transitions = useMemo<PipelineTransitionEdge[]>(
+    () => pipeline?.transitions ?? [],
+    [pipeline?.transitions],
+  );
+  const guardrailsActive = Boolean(pipeline?.enforceTransitions);
+  const columnsById = useMemo(() => new Set(boardColumns.columns.map((stage) => stage.id)), [boardColumns.columns]);
+
+  const stageNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const stage of boardColumns.columns) {
+      map.set(stage.id, stage.name);
+    }
+    return map;
+  }, [boardColumns.columns]);
+
+  const stageKeyById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const stage of orderedStages) {
+      map.set(stage.id, stage.key);
+    }
+    return map;
+  }, [orderedStages]);
+
+  const moveAllowed = useCallback(
+    (sourceStageId: string | null, targetStageId: string) => {
+      if (!guardrailsActive) return true;
+      return transitions.length > 0 && isGuardedTransitionAllowed(transitions, sourceStageId, targetStageId);
+    },
+    [guardrailsActive, transitions],
+  );
+
+  const transitionCase = useMutation({
+    mutationFn: ({
+      caseId,
+      toStageKey,
+      expectedVersion,
+      reason,
+      force,
+    }: {
+      caseId: string;
+      toStageKey: string;
+      expectedVersion: number;
+      reason?: string | null;
+      force?: boolean;
+    }) => pipelinesApi.transitionCase(caseId, { toStageKey, expectedVersion, reason, force }),
+    onSuccess: async () => {
+      setPendingMove(null);
+      setOverrideReason("");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.detail(pipelineId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.cases(pipelineId) }),
+      ]);
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Move blocked",
+        body:
+          error instanceof ApiError && error.status === 409
+            ? "This item changed while you were looking. The board has been refreshed."
+            : "The item could not be moved.",
+        tone: "error",
+      });
+      queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.detail(pipelineId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.cases(pipelineId) });
+    },
+  });
+
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+
+  function handleDragStart(event: DragStartEvent) {
+    setActiveCaseId(event.active.id as string);
+    setActiveOverId(null);
+  }
+
+  function handleDragOver(event: DragOverEvent) {
+    setActiveOverId(event.over ? String(event.over.id) : null);
+  }
+
+  function handleDragEnd(event: DragEndEvent) {
+    setActiveCaseId(null);
+    setActiveOverId(null);
+    const { active, over } = event;
+    if (!over) return;
+
+    const activeCaseIdValue = active.id as string;
+    const activeCase = boardColumns.caseById.get(activeCaseIdValue);
+    if (!activeCase) return;
+
+    const sourceStageId = boardColumns.caseToColumn.get(activeCaseIdValue) ?? null;
+    const targetStageId = resolvePipelineTargetStageId(
+      over.id as string,
+      columnsById,
+      boardColumns.caseToColumn,
+    );
+
+    if (!targetStageId || sourceStageId === targetStageId) return;
+    if (targetStageId === UNASSIGNED_STAGE_ID) return;
+    const targetStageKey = stageKeyById.get(targetStageId);
+    if (!targetStageKey) return;
+
+    const sourceName = stageNameById.get(sourceStageId ?? "") ?? UNASSIGNED_STAGE_NAME;
+    const targetName = stageNameById.get(targetStageId) ?? UNASSIGNED_STAGE_NAME;
+    setPendingMove({
+      caseId: activeCase.id,
+      caseVersion: activeCase.version ?? 1,
+      itemTitle: getCaseTitle(activeCase),
+      sourceName,
+      targetStageId,
+      targetStageKey,
+      targetName,
+      allowed: moveAllowed(sourceStageId, targetStageId),
+    });
+  }
+
   useEffect(() => {
-    setBreadcrumbs([{ label: "Pipelines", href: "/pipelines" }, { label: pipeline.data?.name ?? "Pipeline" }]);
-  }, [pipeline.data?.name, setBreadcrumbs]);
+    setBreadcrumbs([
+      { label: "Pipelines", href: "/pipelines" },
+      { label: pipeline?.name ?? "Pipeline" },
+    ]);
+  }, [pipeline?.name, setBreadcrumbs]);
 
-  if (pipeline.isLoading) return <PageSkeleton />;
-  if (!pipeline.data) return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Pipeline not found.</div>;
+  if (pipelineQuery.isLoading || casesQuery.isLoading) return <PageSkeleton />;
+  if (!pipeline) {
+    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Pipeline not found.</div>;
+  }
 
-  const rows = items.data ?? [];
-
-  return (
-    <div className="mx-auto max-w-6xl px-6 py-8">
-      <div className="mb-6 flex items-start justify-between gap-4">
+  if (orderedStages.length === 0) {
+    return (
+      <div className="mx-auto max-w-6xl space-y-4 px-6 py-8">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Pipeline</p>
-          <h1 className="text-2xl font-semibold text-foreground">{pipeline.data.name}</h1>
-          <p className="text-sm text-muted-foreground">Items move through the stages below.</p>
+          <h1 className="text-2xl font-semibold text-foreground">{pipeline.name}</h1>
+          <p className="text-sm text-muted-foreground">No stages are set up for this pipeline yet.</p>
         </div>
-        <Button asChild>
-          <Link to={`/pipelines/${pipelineId}/add`}>
-            <Plus className="mr-2 h-4 w-4" />
-            Add items
-          </Link>
-        </Button>
+        <EmptyState
+          icon={Hexagon}
+          message="Add stages in pipeline settings to enable the board."
+          action="Open settings"
+          onAction={() => navigate(`/pipelines/${pipelineId}/settings`)}
+        />
+      </div>
+    );
+  }
+
+  const activeCase = activeCaseId ? boardColumns.caseById.get(activeCaseId) ?? null : null;
+
+  return (
+    <div className="mx-auto max-w-6xl space-y-4 px-6 py-8">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Pipeline</p>
+          <h1 className="text-2xl font-semibold text-foreground">{pipeline.name}</h1>
+          {pipeline.description ? <p className="mt-1 text-sm text-muted-foreground">{pipeline.description}</p> : null}
+          <p className="mt-1 text-xs text-muted-foreground">{cases.length} total item{cases.length === 1 ? "" : "s"}</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" asChild>
+            <Link to={`/pipelines/${pipelineId}/settings`}>Settings</Link>
+          </Button>
+          <Button asChild>
+            <Link to={`/pipelines/${pipelineId}/add`}>
+              <Plus className="mr-2 h-4 w-4" />
+              Add items
+            </Link>
+          </Button>
+        </div>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-3">
-        {pipeline.data.stages.map((stage) => {
-          const stageItems = rows.filter((row) => row.case.stageId === stage.id);
-          return (
-            <section key={stage.id} className="min-h-40 border border-border bg-background p-3">
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <h2 className="text-sm font-semibold text-foreground">{stage.name}</h2>
-                <span className="text-xs text-muted-foreground">{itemCountLabel(stageItems.length)}</span>
-              </div>
-              <div className="space-y-2">
-                {stageItems.map((row) => (
-                  <Link
-                    key={row.case.id}
-                    to={`/pipelines/${pipelineId}/items/${row.case.id}`}
-                    className="block border border-border bg-muted/20 px-3 py-2 text-sm font-medium text-foreground hover:bg-muted/40"
-                  >
-                    {row.case.title}
-                  </Link>
-                ))}
-              </div>
-            </section>
-          );
-        })}
-      </div>
+      {guardrailsActive ? (
+        <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-300/30 dark:bg-amber-400/10 dark:text-amber-200">
+          Items follow this pipeline's normal flow. Moves that skip it ask for a reason.
+        </p>
+      ) : null}
+
+      <DndContext
+        onDragStart={handleDragStart}
+        onDragOver={handleDragOver}
+        onDragEnd={handleDragEnd}
+        sensors={sensors}
+      >
+        <div className="overflow-x-auto">
+          <div className="flex items-start gap-3 pb-3">
+            {boardColumns.columns.map((stage) => {
+              const items = boardColumns.byStage.get(stage.id) ?? [];
+              const activeSourceStageId = activeCaseId ? boardColumns.caseToColumn.get(activeCaseId) ?? null : null;
+              const activeTargetStageId = activeOverId
+                ? resolvePipelineTargetStageId(activeOverId, columnsById, boardColumns.caseToColumn)
+                : null;
+              const isDragTargeted = activeCaseId != null && activeTargetStageId === stage.id;
+              const isDragBlocked = isDragTargeted
+                ? stage.id === UNASSIGNED_STAGE_ID || !moveAllowed(activeSourceStageId, stage.id)
+                : false;
+              return (
+                <PipelineBoardColumn
+                  key={stage.id}
+                  stage={stage}
+                  cases={items}
+                  isDragTargeted={isDragTargeted}
+                  isDragBlocked={isDragBlocked}
+                  onColumnEmpty={(columnStage) =>
+                    columnStage.id === UNASSIGNED_STAGE_ID ? "Unassigned items" : "Drop items here"
+                  }
+                />
+              );
+            })}
+          </div>
+        </div>
+
+        <DragOverlay>
+          {activeCase ? <PipelineCaseCard caseItem={activeCase} isOverlay /> : null}
+        </DragOverlay>
+      </DndContext>
+
+      <Dialog
+        open={Boolean(pendingMove)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingMove(null);
+            setOverrideReason("");
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {pendingMove?.allowed ? `Move ${pendingMove.itemTitle}?` : "This skips the normal flow"}
+            </DialogTitle>
+            <DialogDescription>
+              {pendingMove?.allowed
+                ? `Move ${pendingMove.itemTitle} to ${pendingMove.targetName} yourself? Usually the agent suggests this when it is ready.`
+                : pendingMove
+                  ? `${pendingMove.itemTitle} would jump from ${pendingMove.sourceName} to ${pendingMove.targetName}. Add a reason before overriding.`
+                  : "Review this move before continuing."}
+            </DialogDescription>
+          </DialogHeader>
+          {pendingMove && !pendingMove.allowed ? (
+            <label className="block space-y-1.5 text-sm font-medium">
+              <span>Reason</span>
+              <Textarea
+                value={overrideReason}
+                onChange={(event) => setOverrideReason(event.target.value)}
+                rows={3}
+                placeholder="Explain why this item should skip the normal flow."
+                autoFocus
+              />
+            </label>
+          ) : null}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={transitionCase.isPending}
+              onClick={() => {
+                setPendingMove(null);
+                setOverrideReason("");
+              }}
+            >
+              Cancel
+            </Button>
+            {pendingMove?.allowed ? (
+              <Button
+                type="button"
+                disabled={transitionCase.isPending}
+                onClick={() =>
+                  transitionCase.mutate({
+                    caseId: pendingMove.caseId,
+                    toStageKey: pendingMove.targetStageKey,
+                    expectedVersion: pendingMove.caseVersion,
+                  })
+                }
+              >
+                Move it
+              </Button>
+            ) : pendingMove ? (
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={transitionCase.isPending || !overrideReason.trim()}
+                onClick={() =>
+                  transitionCase.mutate({
+                    caseId: pendingMove.caseId,
+                    toStageKey: pendingMove.targetStageKey,
+                    expectedVersion: pendingMove.caseVersion,
+                    reason: overrideReason.trim(),
+                    force: true,
+                  })
+                }
+              >
+                Override and move
+              </Button>
+            ) : null}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
