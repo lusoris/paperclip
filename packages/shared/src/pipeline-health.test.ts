@@ -98,6 +98,33 @@ describe("computePipelineHealth", () => {
     );
   });
 
+  it("does not warn about a missing agent when children-gate auto-advance moves the stage forward", () => {
+    const report = computePipelineHealth(
+      baseInput([
+        stage({
+          kind: "working",
+          config: { requireChildrenTerminal: true, autoAdvanceOnChildrenTerminal: "covered" },
+          instructionsBody: "Create the child feature cases and wait for them to finish.",
+        }),
+      ]),
+    );
+    expect(report.warnings.map((warning) => warning.code)).not.toContain("automation_no_agent");
+    expect(report.warnings.map((warning) => warning.code)).not.toContain("stage_no_automation");
+  });
+
+  it("does not warn about missing automation when a stage auto-advances after children finish", () => {
+    const report = computePipelineHealth(
+      baseInput([
+        stage({
+          kind: "working",
+          config: { requireChildrenTerminal: true, autoAdvanceOnChildrenTerminal: "covered" },
+          instructionsBody: "",
+        }),
+      ]),
+    );
+    expect(report.warnings.map((warning) => warning.code)).not.toContain("stage_no_automation");
+  });
+
   it("does not warn about missing automation on review stages", () => {
     const report = computePipelineHealth(baseInput([stage({ kind: "review", config: {}, instructionsBody: "" })]));
     expect(report.warnings.map((warning) => warning.code)).not.toContain("stage_no_automation");

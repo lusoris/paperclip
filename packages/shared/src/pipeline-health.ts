@@ -96,7 +96,10 @@ export interface PipelineHealthInput {
 type StageConfig = {
   assigneeAgentId?: unknown;
   automation?: unknown;
+  autoAdvanceOnChildrenTerminal?: unknown;
+  onEnter?: unknown;
   requireApproval?: unknown;
+  requireChildrenTerminal?: unknown;
   approver?: { kind?: unknown; id?: unknown } | null;
   variables?: unknown;
   [key: string]: unknown;
@@ -116,12 +119,22 @@ function agentLabel(agent: PipelineHealthAgentRef | undefined): string {
   return name && name.length > 0 ? name : "a teammate";
 }
 
-/** True when stage entry has a saved automation that can attempt to run. */
-function hasRunnableStageAutomation(config: StageConfig): boolean {
+function hasOnEnterRoutineAutomation(config: StageConfig): boolean {
   const onEnter = config.onEnter;
   if (!onEnter || typeof onEnter !== "object" || Array.isArray(onEnter)) return false;
   const record = onEnter as Record<string, unknown>;
   return record.type === "run_routine" && typeof record.routineId === "string" && record.routineId.trim().length > 0;
+}
+
+function hasChildrenGateAutoAdvance(config: StageConfig): boolean {
+  return config.requireChildrenTerminal === true &&
+    typeof config.autoAdvanceOnChildrenTerminal === "string" &&
+    config.autoAdvanceOnChildrenTerminal.trim().length > 0;
+}
+
+/** True when a stage has saved automation that can move work forward. */
+function hasRunnableStageAutomation(config: StageConfig): boolean {
+  return hasOnEnterRoutineAutomation(config) || hasChildrenGateAutoAdvance(config);
 }
 
 function automationAssigneeAgentId(config: StageConfig): string | null {
@@ -198,7 +211,7 @@ export function computePipelineHealth(input: PipelineHealthInput): PipelineHealt
     }
 
     // 3. Instructions exist, but no teammate is assigned to run them.
-    if (!assigneeAgentId && instructionsBody && stage.kind !== "review" && !isTerminalStage) {
+    if (!assigneeAgentId && instructionsBody && !hasStageAutomation && stage.kind !== "review" && !isTerminalStage) {
       warnings.push({
         ...anchor,
         code: "automation_no_agent",
@@ -272,7 +285,7 @@ export function computePipelineHealth(input: PipelineHealthInput): PipelineHealt
     // on-enter automation) need values up front — on entry stages the same
     // variables are the intake form, filled per item, so an empty default is
     // the normal state, not a misconfiguration.
-    const runsInstructions = assigneeAgentId !== null || hasStageAutomation;
+    const runsInstructions = assigneeAgentId !== null || hasOnEnterRoutineAutomation(config);
     const variables = runsInstructions && Array.isArray(config.variables) ? config.variables : [];
     for (const raw of variables) {
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
