@@ -7,6 +7,7 @@ import {
   agents,
   activityLog,
   companies,
+  companyMemberships,
   createDb,
   documents,
   documentRevisions,
@@ -22,6 +23,7 @@ import {
   pipelineStages,
   pipelineTransitions,
   pipelines,
+  principalPermissionGrants,
   routineRevisions,
   routineRuns,
   routines,
@@ -76,6 +78,8 @@ describeEmbeddedPostgres("pipeline routes", () => {
     await db.delete(issues);
     await db.delete(pipelines);
     await db.delete(routines);
+    await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -103,6 +107,28 @@ describeEmbeddedPostgres("pipeline routes", () => {
       issuePrefix: `P${randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase()}`,
     }).returning();
     return company!;
+  }
+
+  async function grantAgentPipelineWrite(
+    companyId: string,
+    agentId: string,
+    scope: Record<string, unknown> | null = null,
+  ) {
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "agent",
+      principalId: agentId,
+      status: "active",
+      membershipRole: "member",
+    }).onConflictDoNothing();
+    await db.insert(principalPermissionGrants).values({
+      companyId,
+      principalType: "agent",
+      principalId: agentId,
+      permissionKey: "pipelines:write",
+      scope,
+      grantedByUserId: null,
+    }).onConflictDoNothing();
   }
 
   const boardActor: Express.Request["actor"] = {
@@ -800,6 +826,7 @@ describeEmbeddedPostgres("pipeline routes", () => {
       role: "engineer",
       adapterType: "codex_local",
     }).returning();
+    await grantAgentPipelineWrite(company.id, agent!.id);
     const runId = randomUUID();
     const agentActor: Express.Request["actor"] = {
       type: "agent",
@@ -1055,6 +1082,105 @@ describeEmbeddedPostgres("pipeline routes", () => {
     expect(res.body.code).toBe("run_id_required");
   });
 
+  it("requires explicit target pipeline write permission for stage rewrites, direct ingest, and breakdown fanout", async () => {
+    const company = await seedCompany();
+    const [agent] = await db.insert(agents).values({
+      companyId: company.id,
+      name: "Pipeline Agent",
+      role: "engineer",
+      status: "idle",
+    }).returning();
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent!.id,
+      status: "active",
+      membershipRole: "member",
+    });
+    const http = request(app(boardActor));
+    const target = await http
+      .post(`/api/companies/${company.id}/pipelines`)
+      .send({
+        key: "unauthorized-target",
+        name: "Unauthorized Target",
+        stages: [
+          { key: "intake", name: "Intake", kind: "open", position: 100 },
+          { key: "done", name: "Done", kind: "done", position: 900 },
+          { key: "cancelled", name: "Cancelled", kind: "cancelled", position: 1000 },
+        ],
+      })
+      .expect(201);
+    const source = await http
+      .post(`/api/companies/${company.id}/pipelines`)
+      .send({
+        key: "authorized-source",
+        name: "Authorized Source",
+        stages: [
+          {
+            key: "planning",
+            name: "Planning",
+            kind: "open",
+            position: 100,
+            config: {
+              breakdown: {
+                targetPipelineId: target.body.id,
+                targetStageKey: "intake",
+                pieceNoun: "piece",
+              },
+            },
+          },
+          { key: "done", name: "Done", kind: "done", position: 900 },
+          { key: "cancelled", name: "Cancelled", kind: "cancelled", position: 1000 },
+        ],
+      })
+      .expect(201);
+    await grantAgentPipelineWrite(company.id, agent!.id, { pipelineId: source.body.id });
+
+    const agentActor: Express.Request["actor"] = {
+      type: "agent",
+      agentId: agent!.id,
+      companyId: company.id,
+      runId: randomUUID(),
+      source: "agent_key",
+    };
+    const agentHttp = request(app(agentActor));
+    const planningStage = source.body.stages.find((stage: { key: string }) => stage.key === "planning");
+
+    await agentHttp
+      .patch(`/api/pipelines/${target.body.id}/stages/${target.body.stages[0].id}`)
+      .send({ config: { breakdown: { targetPipelineId: source.body.id, targetStageKey: "planning" } } })
+      .expect(403);
+
+    await agentHttp
+      .patch(`/api/pipelines/${source.body.id}/stages/${planningStage.id}`)
+      .send({ name: "Planning updated by scoped grant" })
+      .expect(200);
+
+    await agentHttp
+      .post(`/api/pipelines/${target.body.id}/cases`)
+      .send({ caseKey: "direct", title: "Direct target write" })
+      .expect(403)
+      .expect((res) => {
+        expect(res.body.code).toBe("pipeline_write_forbidden");
+      });
+
+    const parent = await http
+      .post(`/api/pipelines/${source.body.id}/cases`)
+      .send({ caseKey: "parent", title: "Parent" })
+      .expect(201);
+    await agentHttp
+      .post(`/api/cases/${parent.body.case.id}/breakdown`)
+      .send({ items: [{ key: "child", title: "Child" }] })
+      .expect(403)
+      .expect((res) => {
+        expect(res.body.code).toBe("pipeline_write_forbidden");
+        expect(res.body.details.pipelineId).toBe(target.body.id);
+      });
+
+    const targetCases = await http.get(`/api/pipelines/${target.body.id}/cases`).expect(200);
+    expect(targetCases.body).toHaveLength(0);
+  });
+
   it("rejects agent exits from human review stages", async () => {
     const company = await seedCompany();
     const http = request(app(boardActor));
@@ -1108,6 +1234,7 @@ describeEmbeddedPostgres("pipeline routes", () => {
       role: "engineer",
       status: "idle",
     }).returning();
+    await grantAgentPipelineWrite(company.id, agent!.id);
     const [routine] = await db.insert(routines).values({
       companyId: company.id,
       title: "Fan out {{release_notes}}",

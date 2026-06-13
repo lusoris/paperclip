@@ -1579,6 +1579,17 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
     };
   }
 
+  async function resolveBreakdownTarget(input: { companyId: string; caseId: string }) {
+    const detail = await getCaseWithStageOrThrow(db, input.companyId, input.caseId);
+    const currentStageConfig = readBreakdownConfig(stageConfig(detail.stage));
+    const config = currentStageConfig ?? await latestCompletedBreakdownConfig(db, input.companyId, input.caseId);
+    if (!config) {
+      throw unprocessable("This pipeline stage is not configured for breakdown", { code: "breakdown_not_configured" });
+    }
+    const { targetPipeline, targetStage } = await loadBreakdownTarget(db, input.companyId, config);
+    return { targetPipeline, targetStage, config };
+  }
+
   async function appendPipelineAutomationRoutineRevision(
     dbOrTx: PipelineDb,
     routine: typeof routines.$inferSelect,
@@ -2284,6 +2295,8 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
   }
 
   const service = {
+    resolveBreakdownTarget,
+
     async createPipeline(input: {
       companyId: string;
       key: string;

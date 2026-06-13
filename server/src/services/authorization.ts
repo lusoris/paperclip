@@ -328,6 +328,7 @@ async function scopeAllows(
         ? requestedScope.targetAgentId
         : null;
   const requestedProjectId = typeof requestedScope.projectId === "string" ? requestedScope.projectId : null;
+  const requestedPipelineId = typeof requestedScope.pipelineId === "string" ? requestedScope.pipelineId : null;
   let constrained = false;
 
   const projectIds = [
@@ -338,6 +339,16 @@ async function scopeAllows(
   if (projectIds.length > 0) {
     constrained = true;
     if (!scopeIncludesId(projectIds, requestedProjectId)) return false;
+  }
+
+  const pipelineIds = [
+    ...scopeValueList(grantScope.pipelineId),
+    ...scopeValueList(grantScope.pipelineIds),
+    ...prefixedScopeValues(grantScope, "pipeline:"),
+  ];
+  if (pipelineIds.length > 0) {
+    constrained = true;
+    if (!scopeIncludesId(pipelineIds, requestedPipelineId)) return false;
   }
 
   const targetAgentIds = [
