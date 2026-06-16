@@ -456,6 +456,75 @@ describe("PipelineItemDetailView", () => {
     });
   });
 
+  it("shows review decisions in the sidebar and advances to the next pipeline review item", async () => {
+    const reviewStage = {
+      ...pipeline.stages[1],
+      config: {
+        approveToStageKey: "done",
+        rejectToStageKey: "cancelled",
+        requestChangesToStageKey: "intake",
+        requireRejectReason: true,
+      },
+    };
+    const detail = itemDetail({
+      stageId: "stage-review",
+      pendingSuggestion: null,
+      version: 7,
+    });
+    detail.stage = reviewStage;
+    mockPipelinesApi.listReviewCases.mockResolvedValue([
+      {
+        case: detail.case,
+        pipeline: { id: "pipeline-1", key: "content", name: "Content" },
+        stage: reviewStage,
+        parentCase: null,
+        pendingSuggestion: null,
+        reviewConfig: { approveToStageKey: "done", rejectToStageKey: "cancelled", requestChangesToStageKey: "intake", requireRejectReason: true },
+      },
+      {
+        case: {
+          id: "item-2",
+          pipelineId: "pipeline-1",
+          stageId: "stage-review",
+          title: "Review the launch tweet",
+          fields: {},
+          version: 3,
+          terminalKind: null,
+        },
+        pipeline: { id: "pipeline-1", key: "content", name: "Content" },
+        stage: reviewStage,
+        parentCase: null,
+        pendingSuggestion: null,
+        reviewConfig: { approveToStageKey: "done", rejectToStageKey: "cancelled", requestChangesToStageKey: "intake", requireRejectReason: true },
+      },
+    ]);
+    mockPipelinesApi.reviewCase.mockResolvedValue({});
+
+    const { container, root } = await renderItemPage(detail, [], { children: [], events: [] });
+
+    expect(container.textContent).toContain("In review");
+    expect(container.textContent).toContain("Next in this review queue: Review the launch tweet");
+
+    const approveButton = container.querySelector<HTMLButtonElement>('button[aria-label="Approve and move to Done"]');
+    expect(approveButton).not.toBeNull();
+
+    await act(async () => {
+      approveButton!.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mockPipelinesApi.reviewCase).toHaveBeenCalledWith("item-1", {
+      decision: "approve",
+      reason: null,
+      expectedVersion: 7,
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/pipelines/pipeline-1/items/item-2");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("links each built-from child to its own pipeline, even across pipelines", async () => {
     const { container, root } = await renderItemPage(itemDetail(), [], {
       children: [

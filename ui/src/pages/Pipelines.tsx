@@ -50,6 +50,7 @@ import {
   type PipelineIntakeField,
   type PipelineIntakeForm,
   type PipelineListItem,
+  type PipelineReviewDecision,
   type PipelineReviewCaseRow,
   type PipelineStage,
 } from "../api/pipelines";
@@ -1588,7 +1589,9 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { selectedCompanyId } = useCompany();
   const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
+  const [reviewDecisionNote, setReviewDecisionNote] = useState("");
 
   const pipeline = useQuery({
     queryKey: queryKeys.pipelines.detail(pipelineId),
@@ -1612,6 +1615,13 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
   });
 
   const detail = item.data;
+  const reviewQueueItems = useQuery({
+    queryKey: selectedCompanyId
+      ? ["pipelines", "review-cases", selectedCompanyId, "pipeline", pipelineId]
+      : ["pipelines", "review-cases", "__none__", "pipeline", pipelineId],
+    queryFn: () => pipelinesApi.listReviewCases(selectedCompanyId!, { pipelineId }),
+    enabled: Boolean(selectedCompanyId && detail?.stage.kind === "review"),
+  });
   const stages = pipeline.data?.stages ?? detail?.allowedNextStages ?? [];
   const stageLookup = useMemo(() => {
     const lookup = new Map<string, string>();
@@ -1724,6 +1734,64 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       navigate(`/pipelines/${pipelineId}`);
     },
     onError: () => pushToast({ title: "Could not remove the item", tone: "error" }),
+  });
+
+  const reviewConfig = useMemo(
+    () => detail ? reviewDecisionConfig(detail.stage, stages) : null,
+    [detail, stages],
+  );
+  const reviewActions = useMemo(
+    () => reviewConfig ? reviewDecisionActions(reviewConfig, stageLookup) : [],
+    [reviewConfig, stageLookup],
+  );
+  const nextReviewItem = useMemo(() => {
+    const rows = reviewQueueItems.data ?? [];
+    if (rows.length === 0) return null;
+    const currentIndex = rows.findIndex((row) => row.case.id === caseId);
+    if (currentIndex >= 0) {
+      const laterRow = rows.slice(currentIndex + 1).find((row) => row.case.id !== caseId);
+      if (laterRow) return laterRow;
+    }
+    return rows.find((row) => row.case.id !== caseId) ?? null;
+  }, [caseId, reviewQueueItems.data]);
+  const decideReview = useMutation({
+    mutationFn: ({ decision }: { decision: PipelineReviewDecision }) => {
+      if (!detail?.case.version) throw new Error("Missing item version");
+      return pipelinesApi.reviewCase(caseId, {
+        decision,
+        reason: reviewDecisionNote.trim() || null,
+        expectedVersion: detail.case.version,
+      });
+    },
+    onSuccess: async (_result, variables) => {
+      let nextHref = nextReviewItem
+        ? `/pipelines/${nextReviewItem.pipeline.id}/items/${nextReviewItem.case.id}`
+        : null;
+      if (!nextHref && selectedCompanyId) {
+        try {
+          const latestReviewItems = await pipelinesApi.listReviewCases(selectedCompanyId, { pipelineId });
+          const latestNextItem = latestReviewItems.find((row) => row.case.id !== caseId) ?? null;
+          nextHref = latestNextItem
+            ? `/pipelines/${latestNextItem.pipeline.id}/items/${latestNextItem.case.id}`
+            : null;
+        } catch {
+          nextHref = null;
+        }
+      }
+      setReviewDecisionNote("");
+      await Promise.all([
+        invalidateItem(),
+        selectedCompanyId
+          ? queryClient.invalidateQueries({ queryKey: ["pipelines", "review-cases", selectedCompanyId] })
+          : Promise.resolve(),
+      ]);
+      pushToast({
+        title: reviewDecisionToastTitle(variables.decision, Boolean(nextHref)),
+        tone: "success",
+      });
+      if (nextHref) navigate(nextHref);
+    },
+    onError: () => pushToast({ title: "Could not update the review", tone: "error" }),
   });
 
   if (pipeline.isLoading || item.isLoading) return <PageSkeleton />;
@@ -1985,6 +2053,19 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         </main>
 
         <aside className="space-y-8">
+          {detail.stage.kind === "review" && reviewConfig ? (
+            <ReviewDecisionPanel
+              actions={reviewActions}
+              note={reviewDecisionNote}
+              requireReason={reviewConfig.requireRejectReason}
+              pendingDecision={decideReview.variables?.decision ?? null}
+              pending={decideReview.isPending}
+              nextItemTitle={nextReviewItem?.case.title ?? null}
+              onNoteChange={setReviewDecisionNote}
+              onDecide={(decision) => decideReview.mutate({ decision })}
+            />
+          ) : null}
+
           <DetailSection title="Linked work">
             <PipelineWorkReferences references={workReferences} />
           </DetailSection>
@@ -2055,6 +2136,181 @@ function isTerminalChild(row: { case: PipelineCase; stage: PipelineStage }) {
 
 function getWaitingChildren(rows: Array<{ case: PipelineCase; stage: PipelineStage }>) {
   return rows.filter((row) => !isTerminalChild(row));
+}
+
+interface ReviewDecisionConfig {
+  approveToStageKey: string | null;
+  rejectToStageKey: string | null;
+  requestChangesToStageKey: string | null;
+  requireRejectReason: boolean;
+}
+
+interface ReviewDecisionAction {
+  decision: PipelineReviewDecision;
+  label: string;
+  targetStageName: string;
+  targetStageKey: string;
+  requireReason: boolean;
+  variant: "default" | "outline" | "destructive";
+}
+
+function configString(config: Record<string, unknown> | null | undefined, key: string) {
+  const value = config?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function stageKeyForKind(stages: PipelineStage[], kind: string) {
+  return stages.find((stage) => stage.kind === kind)?.key ?? stages.find((stage) => stage.key === kind)?.key ?? null;
+}
+
+function reviewDecisionConfig(stage: PipelineStage, stages: PipelineStage[]): ReviewDecisionConfig | null {
+  if (stage.kind !== "review") return null;
+  const config = stage.config ?? {};
+  return {
+    approveToStageKey: configString(config, "approveToStageKey") ?? stageKeyForKind(stages, "done"),
+    rejectToStageKey: configString(config, "rejectToStageKey") ?? stageKeyForKind(stages, "cancelled"),
+    requestChangesToStageKey: configString(config, "requestChangesToStageKey"),
+    requireRejectReason: config.requireRejectReason !== false,
+  };
+}
+
+function reviewDecisionActions(
+  config: ReviewDecisionConfig,
+  stageLookup: Map<string, string>,
+): ReviewDecisionAction[] {
+  const actions: ReviewDecisionAction[] = [];
+  if (config.approveToStageKey) {
+    actions.push({
+      decision: "approve",
+      label: "Approve",
+      targetStageKey: config.approveToStageKey,
+      targetStageName: stageLookup.get(config.approveToStageKey) ?? humanizePipelineItemStatus(config.approveToStageKey),
+      requireReason: false,
+      variant: "default",
+    });
+  }
+  if (config.requestChangesToStageKey) {
+    actions.push({
+      decision: "request_changes",
+      label: "Request changes",
+      targetStageKey: config.requestChangesToStageKey,
+      targetStageName: stageLookup.get(config.requestChangesToStageKey) ?? humanizePipelineItemStatus(config.requestChangesToStageKey),
+      requireReason: config.requireRejectReason,
+      variant: "outline",
+    });
+  }
+  if (config.rejectToStageKey) {
+    actions.push({
+      decision: "reject",
+      label: "Reject",
+      targetStageKey: config.rejectToStageKey,
+      targetStageName: stageLookup.get(config.rejectToStageKey) ?? humanizePipelineItemStatus(config.rejectToStageKey),
+      requireReason: config.requireRejectReason,
+      variant: "destructive",
+    });
+  }
+  return actions;
+}
+
+function reviewDecisionToastTitle(decision: PipelineReviewDecision, movedToNextItem: boolean) {
+  const prefix = decision === "approve"
+    ? "Item approved"
+    : decision === "request_changes"
+      ? "Changes requested"
+      : "Item rejected";
+  return movedToNextItem ? `${prefix}; moved to the next review` : prefix;
+}
+
+function ReviewDecisionPanel({
+  actions,
+  note,
+  requireReason,
+  pending,
+  pendingDecision,
+  nextItemTitle,
+  onNoteChange,
+  onDecide,
+}: {
+  actions: ReviewDecisionAction[];
+  note: string;
+  requireReason: boolean;
+  pending: boolean;
+  pendingDecision: PipelineReviewDecision | null;
+  nextItemTitle: string | null;
+  onNoteChange: (value: string) => void;
+  onDecide: (decision: PipelineReviewDecision) => void;
+}) {
+  const trimmedNote = note.trim();
+
+  return (
+    <section>
+      <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Review</h2>
+      <div className="border-y border-amber-300 bg-amber-50/70 py-4 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
+        <div className="space-y-4 px-1">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="mt-1 h-5 w-5 shrink-0" />
+            <div>
+              <p className="text-2xl font-semibold leading-tight">In review</p>
+              <p className="mt-1 text-sm opacity-80">
+                Decide where this item goes next.
+              </p>
+            </div>
+          </div>
+
+          <label className="block space-y-1.5 text-sm font-medium">
+            <span>Reason</span>
+            <Textarea
+              value={note}
+              onChange={(event) => onNoteChange(event.target.value)}
+              rows={3}
+              placeholder={requireReason ? "Required for changes or rejection." : "Optional note."}
+              className="bg-background/90 text-foreground"
+            />
+          </label>
+
+          <div className="space-y-2">
+            {actions.map((action) => {
+              const reasonMissing = action.requireReason && trimmedNote.length === 0;
+              const isPendingAction = pending && pendingDecision === action.decision;
+              return (
+                <Button
+                  key={action.decision}
+                  type="button"
+                  variant={action.variant}
+                  className="h-auto min-h-11 w-full justify-start px-3 py-2 text-left"
+                  aria-label={`${action.label} and move to ${action.targetStageName}`}
+                  disabled={pending || reasonMissing}
+                  onClick={() => onDecide(action.decision)}
+                >
+                  {isPendingAction ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : action.decision === "approve" ? (
+                    <Check className="h-4 w-4" />
+                  ) : (
+                    <X className="h-4 w-4" />
+                  )}
+                  <span className="min-w-0 flex-1">
+                    <span className="block">{action.label}</span>
+                    <span className="block truncate text-xs font-normal opacity-75">
+                      Move to {action.targetStageName}
+                    </span>
+                  </span>
+                </Button>
+              );
+            })}
+          </div>
+
+          {nextItemTitle ? (
+            <p className="text-xs opacity-75">
+              Next in this review queue: <span className="font-medium">{nextItemTitle}</span>
+            </p>
+          ) : (
+            <p className="text-xs opacity-75">No other item is waiting in this pipeline review queue.</p>
+          )}
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function PipelineEventText({
