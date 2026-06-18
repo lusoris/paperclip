@@ -15,6 +15,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   create: vi.fn(),
   createChild: vi.fn(),
+  decomposeAcceptedPlan: vi.fn(),
   getAttachmentById: vi.fn(),
   getByIdentifier: vi.fn(),
   getById: vi.fn(),
@@ -361,6 +362,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.assertCheckoutOwner.mockReset();
     mockIssueService.create.mockReset();
     mockIssueService.createChild.mockReset();
+    mockIssueService.decomposeAcceptedPlan.mockReset();
     mockIssueService.getAttachmentById.mockReset();
     mockIssueService.getByIdentifier.mockReset();
     mockIssueService.getById.mockReset();
@@ -483,6 +485,27 @@ describe("agent issue mutation checkout ownership", () => {
       },
       parentBlockerAdded: false,
     }));
+    mockIssueService.decomposeAcceptedPlan.mockImplementation(async (_sourceIssueId: string, input: Record<string, unknown>) => {
+      const children = input.children as Record<string, unknown>[];
+      return {
+        decomposition: {
+          id: "decomposition-1",
+          status: "completed",
+          childIssueIds: children.map((child) => child.id),
+        },
+        childIssueIds: children.map((child) => child.id),
+        newlyCreatedIssues: children.map((child) => ({
+          ...makeIssue({
+            id: child.id,
+            parentId: issueId,
+            status: child.status,
+            assigneeAgentId: child.assigneeAgentId ?? null,
+          }),
+          ...child,
+          companyId,
+        })),
+      };
+    });
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
@@ -1233,6 +1256,7 @@ describe("agent issue mutation checkout ownership", () => {
         if (keys.includes("contextSnapshot")) return runRows;
         if (keys.includes("watchdogAgentId")) return watchdogRows;
         if (keys.includes("parentId")) return ancestryRows;
+        if (keys.includes("status")) return [];
         if (keys.includes("agentCompanyId")) return runRows;
         return [{ id: peerAgentId, companyId, permissions: {}, role: "engineer", reportsTo: null }];
       };
@@ -1358,6 +1382,112 @@ describe("agent issue mutation checkout ownership", () => {
       expect(res.status, JSON.stringify(res.body)).toBe(409);
       expect(res.body.error).toContain("Task-watchdog review is stale");
       expect(mockIssueService.createChild).not.toHaveBeenCalled();
+    });
+
+    it("serializes watchdog accepted-plan follow-ups behind one active child lane", async () => {
+      denyBaseBoundary();
+      mockIssueService.list.mockResolvedValue([]);
+      mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, reference: string) => ({
+        ambiguous: false,
+        agent: reference === ownerAgentId ? makeAgent(ownerAgentId) : null,
+      }));
+      mockIssueService.getById.mockImplementation(async (id: string) => {
+        if (id === watchdogReportIssueId) {
+          return makeIssue({
+            id: watchdogReportIssueId,
+            originKind: "task_watchdog",
+            status: "in_progress",
+            assigneeAgentId: peerAgentId,
+          });
+        }
+        return makeIssue({ assigneeAgentId: ownerAgentId });
+      });
+
+      const app = await createApp(watchdogActor(), createWatchdogDb());
+      const res = await request(app)
+        .post(`/api/issues/${issueId}/accepted-plan-decompositions`)
+        .send({
+          acceptedPlanRevisionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          children: [
+            { title: "Fix watchdog authorization", assigneeAgentId: ownerAgentId },
+            { title: "Fix watchdog startup race", assigneeAgentId: ownerAgentId },
+          ],
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const decompositionInput = mockIssueService.decomposeAcceptedPlan.mock.calls[0]?.[1];
+      const children = decompositionInput.children as Array<Record<string, unknown>>;
+      expect(children).toHaveLength(2);
+      expect(children[0]).toEqual(expect.objectContaining({
+        title: "Fix watchdog authorization",
+        status: "todo",
+        assigneeAgentId: ownerAgentId,
+      }));
+      expect(children[1]).toEqual(expect.objectContaining({
+        title: "Fix watchdog startup race",
+        status: "blocked",
+        assigneeAgentId: ownerAgentId,
+        blockedByIssueIds: [children[0]?.id],
+      }));
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        ownerAgentId,
+        expect.objectContaining({
+          payload: expect.objectContaining({ issueId: children[0]?.id }),
+        }),
+      );
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        watchdogReportIssueId,
+        expect.objectContaining({
+          status: "blocked",
+          blockedByIssueIds: [children[0]?.id],
+          actorAgentId: peerAgentId,
+        }),
+      );
+    });
+
+    it("preserves normal accepted-plan decomposition parallel wakeups outside watchdog context", async () => {
+      mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, reference: string) => ({
+        ambiguous: false,
+        agent: reference === ownerAgentId ? makeAgent(ownerAgentId) : null,
+      }));
+      const app = await createApp(ownerActor());
+      const res = await request(app)
+        .post(`/api/issues/${issueId}/accepted-plan-decompositions`)
+        .send({
+          acceptedPlanRevisionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          children: [
+            { title: "Implement backend", assigneeAgentId: ownerAgentId },
+            { title: "Implement frontend", assigneeAgentId: ownerAgentId },
+          ],
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const decompositionInput = mockIssueService.decomposeAcceptedPlan.mock.calls[0]?.[1];
+      const children = decompositionInput.children as Array<Record<string, unknown>>;
+      expect(children).toHaveLength(2);
+      expect(children[0]).toEqual(expect.objectContaining({ status: "todo" }));
+      expect(children[1]).toEqual(expect.objectContaining({ status: "todo" }));
+      expect(children[1]?.blockedByIssueIds).toBeUndefined();
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(2);
+      expect(mockHeartbeatService.wakeup).toHaveBeenNthCalledWith(
+        1,
+        ownerAgentId,
+        expect.objectContaining({
+          payload: expect.objectContaining({ issueId: children[0]?.id }),
+        }),
+      );
+      expect(mockHeartbeatService.wakeup).toHaveBeenNthCalledWith(
+        2,
+        ownerAgentId,
+        expect.objectContaining({
+          payload: expect.objectContaining({ issueId: children[1]?.id }),
+        }),
+      );
+      expect(mockIssueService.update).not.toHaveBeenCalledWith(
+        watchdogReportIssueId,
+        expect.anything(),
+      );
     });
 
     it("lets a watchdog run reassign a watched issue to an active same-company agent", async () => {

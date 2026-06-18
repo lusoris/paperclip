@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -1058,6 +1058,7 @@ export function issueRoutes(
       ? heartbeat.wakeup
       : opts.taskWatchdogEnqueueWakeup ?? undefined,
   });
+  const TASK_WATCHDOG_ORIGIN_KIND = "task_watchdog";
   const TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND = "task_watchdog_product_bug";
   const routinesSvc = routineService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
@@ -2063,6 +2064,95 @@ export function issueRoutes(
       },
     });
     return false;
+  }
+
+  async function resolveWatchdogFollowUpSerializationContext(
+    req: Request,
+    parent: {
+      id: string;
+      companyId: string;
+      status?: string | null;
+      originKind?: string | null;
+    },
+  ) {
+    if (parent.originKind === TASK_WATCHDOG_ORIGIN_KIND) {
+      return {
+        enabled: true as const,
+        watchdogParentIssueId: parent.id,
+      };
+    }
+    if (req.actor.type !== "agent") return null;
+    const scope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    if (scope.kind !== "watchdog") return null;
+    return {
+      enabled: true as const,
+      watchdogParentIssueId: scope.watchdogIssueId,
+    };
+  }
+
+  function mergeIssueBlockerIds(
+    existing: unknown,
+    blockerIssueId: string | null | undefined,
+  ) {
+    const current = Array.isArray(existing)
+      ? existing.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      : [];
+    return blockerIssueId ? [...new Set([...current, blockerIssueId])] : [...new Set(current)];
+  }
+
+  async function findCurrentSerializedWatchdogChild(parent: { id: string; companyId: string }) {
+    const children = await db
+      .select({
+        id: issueRows.id,
+        status: issueRows.status,
+      })
+      .from(issueRows)
+      .where(and(
+        eq(issueRows.companyId, parent.companyId),
+        eq(issueRows.parentId, parent.id),
+        inArray(issueRows.status, ["todo", "in_progress", "in_review", "blocked"]),
+        isNull(issueRows.hiddenAt),
+      ))
+      .orderBy(asc(issueRows.issueNumber), asc(issueRows.createdAt), asc(issueRows.id));
+    return children[0] ?? null;
+  }
+
+  async function blockWatchdogParentOnCurrentChild(input: {
+    actor: ReturnType<typeof getActorInfo>;
+    watchdogParentIssueId: string | null | undefined;
+    currentChildIssueId: string | null | undefined;
+  }) {
+    if (!input.watchdogParentIssueId || !input.currentChildIssueId) return;
+    const watchdogParent = await svc.getById(input.watchdogParentIssueId);
+    if (!watchdogParent || watchdogParent.originKind !== TASK_WATCHDOG_ORIGIN_KIND) return;
+    if (watchdogParent.status !== "in_progress" && watchdogParent.status !== "blocked") return;
+
+    const relations = await svc.getRelationSummaries(watchdogParent.id);
+    const nextBlockedByIssueIds = mergeIssueBlockerIds(
+      relations.blockedBy?.map((relation) => relation.id) ?? [],
+      input.currentChildIssueId,
+    );
+    await svc.update(watchdogParent.id, {
+      status: "blocked",
+      blockedByIssueIds: nextBlockedByIssueIds,
+      actorAgentId: input.actor.agentId,
+      actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+    });
+    await logActivity(db, {
+      companyId: watchdogParent.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "issue.task_watchdog_followups_serialized",
+      entityType: "issue",
+      entityId: watchdogParent.id,
+      details: {
+        watchdogParentIssueId: watchdogParent.id,
+        currentChildIssueId: input.currentChildIssueId,
+        blockedByIssueIds: nextBlockedByIssueIds,
+      },
+    });
   }
 
   function normalizeWatchdogDiscovery(input: unknown): {
@@ -4890,6 +4980,10 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(parent.companyId, createBody.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
+    const serializationContext = await resolveWatchdogFollowUpSerializationContext(req, parent);
+    const currentSerializedChild = serializationContext
+      ? await findCurrentSerializedWatchdogChild(parent)
+      : null;
     const executionPolicy = applyActorMonitorScheduledBy(
       normalizeIssueExecutionPolicy(createBody.executionPolicy),
       actor.actorType,
@@ -4906,6 +5000,12 @@ export function issueRoutes(
       ...createBody,
       id: issueId,
       executionPolicy,
+      ...(currentSerializedChild
+        ? {
+          status: "blocked",
+          blockedByIssueIds: mergeIssueBlockerIds(createBody.blockedByIssueIds, currentSerializedChild.id),
+        }
+        : {}),
       ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -4931,6 +5031,12 @@ export function issueRoutes(
         inheritedExecutionWorkspaceFromIssueId: parent.id,
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
         ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
+        ...(serializationContext
+          ? {
+            watchdogFollowUpsSerialized: true,
+            serializedBehindIssueId: currentSerializedChild?.id ?? null,
+          }
+          : {}),
       },
     });
 
@@ -4978,14 +5084,21 @@ export function issueRoutes(
       });
     }
 
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.child_create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
+    if (!serializationContext || !currentSerializedChild) {
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "create",
+        contextSource: "issue.child_create",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
+    await blockWatchdogParentOnCurrentChild({
+      actor,
+      watchdogParentIssueId: serializationContext?.watchdogParentIssueId,
+      currentChildIssueId: currentSerializedChild?.id ?? issue.id,
     });
     await queueTaskWatchdogEvaluation(issue, actor.runId);
 
@@ -5064,6 +5177,25 @@ export function issueRoutes(
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
       });
     }
+    const serializationContext = await resolveWatchdogFollowUpSerializationContext(req, sourceIssue);
+    const existingSerializedChild = serializationContext
+      ? await findCurrentSerializedWatchdogChild(sourceIssue)
+      : null;
+    const serializedBlockedChildIds = new Set<string>();
+    if (serializationContext) {
+      for (let index = 0; index < normalizedChildren.length; index += 1) {
+        const blockerIssueId: string | null = index === 0
+          ? existingSerializedChild?.id ?? null
+          : normalizedChildren[index - 1]?.id ?? null;
+        if (!blockerIssueId) continue;
+        normalizedChildren[index] = {
+          ...normalizedChildren[index],
+          status: "blocked",
+          blockedByIssueIds: mergeIssueBlockerIds(normalizedChildren[index].blockedByIssueIds, blockerIssueId),
+        };
+        serializedBlockedChildIds.add(normalizedChildren[index].id);
+      }
+    }
 
     const result = await svc.decomposeAcceptedPlan(sourceIssue.id, {
       acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
@@ -5090,6 +5222,13 @@ export function issueRoutes(
         requestedChildCount: req.body.children.length,
         childIssueIds: result.childIssueIds,
         newlyCreatedChildIssueIds: result.newlyCreatedIssues.map((issue) => issue.id),
+        ...(serializationContext
+          ? {
+            watchdogFollowUpsSerialized: true,
+            currentSerializedChildIssueId: existingSerializedChild?.id ?? result.newlyCreatedIssues[0]?.id ?? null,
+            serializedBlockedChildIssueIds: [...serializedBlockedChildIds],
+          }
+          : {}),
       },
     });
 
@@ -5110,6 +5249,12 @@ export function issueRoutes(
           inheritedExecutionWorkspaceFromIssueId: sourceIssue.id,
           acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
           ...buildCreateIssueActivityStatusDetails(issue, res),
+          ...(serializationContext
+            ? {
+              watchdogFollowUpsSerialized: true,
+              serializedBlocked: serializedBlockedChildIds.has(issue.id),
+            }
+            : {}),
         },
       });
 
@@ -5139,17 +5284,24 @@ export function issueRoutes(
         });
       }
 
-      void queueIssueAssignmentWakeup({
-        heartbeat,
-        issue,
-        reason: "issue_assigned",
-        mutation: "accepted_plan_decomposition",
-        contextSource: "issue.accepted_plan_decomposition",
-        requestedByActorType: actor.actorType,
-        requestedByActorId: actor.actorId,
-      });
+      if (!serializedBlockedChildIds.has(issue.id)) {
+        void queueIssueAssignmentWakeup({
+          heartbeat,
+          issue,
+          reason: "issue_assigned",
+          mutation: "accepted_plan_decomposition",
+          contextSource: "issue.accepted_plan_decomposition",
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+        });
+      }
       await queueTaskWatchdogEvaluation(issue, actor.runId);
     }
+    await blockWatchdogParentOnCurrentChild({
+      actor,
+      watchdogParentIssueId: serializationContext?.watchdogParentIssueId,
+      currentChildIssueId: existingSerializedChild?.id ?? result.newlyCreatedIssues[0]?.id,
+    });
 
     res.json({
       decomposition: result.decomposition,
