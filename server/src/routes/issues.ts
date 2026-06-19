@@ -85,7 +85,6 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueReferenceService,
   issueService,
-  taskWatchdogService,
   clampIssueListLimit,
   documentService,
   documentAnnotationService,
@@ -99,7 +98,7 @@ import {
   resolveTaskWatchdogMutationScope,
   taskWatchdogScopeAllowsIssueMutation,
 } from "../services/task-watchdog-scope.js";
-import type { TaskWatchdogServiceDeps } from "../services/task-watchdogs.js";
+import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -200,6 +199,8 @@ type SuccessfulRunHandoffActivityRow = {
   details: Record<string, unknown> | null;
   createdAt: Date;
 };
+type TaskWatchdogService = ReturnType<typeof taskWatchdogService>;
+type TaskWatchdogServiceFactory = typeof taskWatchdogService;
 
 function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => void) {
   if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
@@ -216,6 +217,43 @@ function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => 
     };
   }
   next();
+}
+
+function noopTaskWatchdogService(): TaskWatchdogService {
+  return {
+    getActiveForIssue: async () => null,
+    listActiveSummariesForIssues: async () => new Map(),
+    upsertForIssue: async () => {
+      throw unprocessable("Task watchdog service is unavailable");
+    },
+    disableForIssue: async () => null,
+    reconcileTaskWatchdogs: async () => ({
+      checked: 0,
+      triggered: 0,
+      live: 0,
+      pendingFirstRun: 0,
+      alreadyReviewed: 0,
+      skipped: 0,
+      watchdogIssueIds: [],
+    }),
+    reconcileForIssueAndAncestors: async () => ({
+      checked: 0,
+      triggered: 0,
+      pendingFirstRun: 0,
+      skipped: 0,
+      watchdogIssueIds: [],
+    }),
+    revalidateMutationScope: async () => ({
+      allowed: true,
+      classification: {
+        state: "stopped",
+        reason: "Task watchdog service unavailable in this route context.",
+        includedIssueIds: [],
+        stopFingerprint: "task_watchdog_stop:unavailable",
+        stoppedLeaves: [],
+      },
+    }),
+  };
 }
 
 function buildAttachmentContentPath(attachmentId: string): string {
@@ -1055,11 +1093,17 @@ export function issueRoutes(
   const documentAnnotationsSvc = documentAnnotationService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
-  const taskWatchdogsSvc = taskWatchdogService(db, {
+  const taskWatchdogFactory: TaskWatchdogServiceFactory | undefined = Object.prototype.hasOwnProperty.call(
+    serviceIndex,
+    "taskWatchdogService",
+  )
+    ? serviceIndex.taskWatchdogService
+    : undefined;
+  const taskWatchdogsSvc = taskWatchdogFactory?.(db, {
     enqueueWakeup: opts.taskWatchdogEnqueueWakeup === undefined
       ? heartbeat.wakeup
       : opts.taskWatchdogEnqueueWakeup ?? undefined,
-  });
+  }) ?? noopTaskWatchdogService();
   const routinesSvc = routineService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });

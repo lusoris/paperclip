@@ -70,6 +70,8 @@ export async function resolveTaskWatchdogMutationScope(
     .then((rows) => rows[0] ?? null);
 
   if (!run) return { kind: "none" };
+  const taskWatchdog = readTaskWatchdogContext(run.contextSnapshot);
+  if (!taskWatchdog) return { kind: "none" };
   if (run.agentId !== agentId || (actorCompanyId && run.companyId !== actorCompanyId)) {
     return {
       kind: "invalid",
@@ -77,8 +79,6 @@ export async function resolveTaskWatchdogMutationScope(
     };
   }
 
-  const taskWatchdog = readTaskWatchdogContext(run.contextSnapshot);
-  if (!taskWatchdog) return { kind: "none" };
   if (!taskWatchdog.watchedIssueId) {
     return {
       kind: "invalid",
