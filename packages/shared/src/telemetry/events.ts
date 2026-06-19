@@ -1,5 +1,14 @@
 import type { TelemetryClient } from "./client.js";
 
+function hashedAgentIdDimensions(
+  client: TelemetryClient,
+  agentId: string | undefined,
+): { agent_id_hashed: string; agent_id_is_hashed: true } | Record<string, never> {
+  return agentId
+    ? { agent_id_hashed: client.hashPrivateRef(agentId), agent_id_is_hashed: true }
+    : {};
+}
+
 export function trackInstallStarted(client: TelemetryClient): void {
   client.track("install.started");
 }
@@ -54,9 +63,7 @@ export function trackAgentCreated(
 ): void {
   client.track("agent.created", {
     agent_role: dims.agentRole,
-    ...(dims.agentId
-      ? { agent_id_hashed: client.hashPrivateRef(dims.agentId), agent_id_is_hashed: true }
-      : {}),
+    ...hashedAgentIdDimensions(client, dims.agentId),
   });
 }
 
@@ -76,9 +83,7 @@ export function trackAgentFirstHeartbeat(
 ): void {
   client.track("agent.first_heartbeat", {
     agent_role: dims.agentRole,
-    ...(dims.agentId
-      ? { agent_id_hashed: client.hashPrivateRef(dims.agentId), agent_id_is_hashed: true }
-      : {}),
+    ...hashedAgentIdDimensions(client, dims.agentId),
   });
 }
 
@@ -88,9 +93,7 @@ export function trackAgentTaskCompleted(
 ): void {
   client.track("agent.task_completed", {
     agent_role: dims.agentRole,
-    ...(dims.agentId
-      ? { agent_id_hashed: client.hashPrivateRef(dims.agentId), agent_id_is_hashed: true }
-      : {}),
+    ...hashedAgentIdDimensions(client, dims.agentId),
     ...(dims.adapterType ? { adapter_type: dims.adapterType } : {}),
     ...(dims.model ? { model: dims.model } : {}),
   });

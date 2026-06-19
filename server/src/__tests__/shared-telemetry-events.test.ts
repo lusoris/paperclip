@@ -92,17 +92,25 @@ describe("shared telemetry agent events", () => {
     const client = createClient();
 
     trackAgentCreated(client, { agentRole: "engineer" });
+    trackAgentFirstHeartbeat(client, { agentRole: "coder" });
+    trackAgentTaskCompleted(client, { agentRole: "qa" });
 
-    expect(client.track).toHaveBeenCalledWith("agent.created", {
-      agent_role: "engineer",
-    });
-    expect(client.track).not.toHaveBeenCalledWith(
-      "agent.created",
-      expect.objectContaining({
-        agent_id_hashed: expect.any(String),
-        agent_id_is_hashed: expect.any(Boolean),
-      }),
-    );
+    for (const [eventName, agentRole] of [
+      ["agent.created", "engineer"],
+      ["agent.first_heartbeat", "coder"],
+      ["agent.task_completed", "qa"],
+    ]) {
+      expect(client.track).toHaveBeenCalledWith(eventName, {
+        agent_role: agentRole,
+      });
+      expect(client.track).not.toHaveBeenCalledWith(
+        eventName,
+        expect.objectContaining({
+          agent_id_hashed: expect.any(String),
+          agent_id_is_hashed: expect.any(Boolean),
+        }),
+      );
+    }
     expect(client.hashPrivateRef).not.toHaveBeenCalled();
   });
 
