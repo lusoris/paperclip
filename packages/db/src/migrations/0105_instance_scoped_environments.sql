@@ -11,17 +11,20 @@ BEGIN
     SELECT
       e.id,
       CASE
+        -- Only collapse classes that are globally singleton by design.
+        -- Named remote environments may legitimately differ across companies
+        -- even when they share the same display name.
         WHEN e.driver = 'local' THEN '__paperclip_builtin_local__'
         WHEN e.driver = 'sandbox' AND (e.metadata ->> 'managedByPaperclip')::boolean = true
           THEN '__paperclip_managed_sandbox__'
-        ELSE e.driver || ':' || e.name
+        ELSE e.id::text
       END AS group_key,
       row_number() OVER (
         PARTITION BY CASE
           WHEN e.driver = 'local' THEN '__paperclip_builtin_local__'
           WHEN e.driver = 'sandbox' AND (e.metadata ->> 'managedByPaperclip')::boolean = true
             THEN '__paperclip_managed_sandbox__'
-          ELSE e.driver || ':' || e.name
+          ELSE e.id::text
         END
         ORDER BY e.created_at ASC, e.id ASC
       ) AS rn
