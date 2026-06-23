@@ -142,7 +142,7 @@ function sanitizeErrorMessage(message: string | null | undefined) {
   if (!message) return null;
   return message
     .replace(/https?:\/\/[^\s<>()]+/gi, "[redacted-url]")
-    .replace(/\b(?:token|key|secret|authorization|bearer)=\S+/gi, "$1=[redacted]");
+    .replace(/\b(token|key|secret|authorization|bearer)=\S+/gi, "$1=[redacted]");
 }
 
 function genericUrlDetector(): ExternalObjectDetector {
@@ -895,7 +895,13 @@ export function externalObjectService(
     const due = await db
       .select({ id: externalObjects.id })
       .from(externalObjects)
-      .where(and(eq(externalObjects.companyId, companyId), lte(externalObjects.nextRefreshAt, now)))
+      .where(
+        and(
+          eq(externalObjects.companyId, companyId),
+          eq(externalObjects.isTerminal, false),
+          lte(externalObjects.nextRefreshAt, now),
+        ),
+      )
       .limit(limit);
     const results = [];
     for (const row of due) {

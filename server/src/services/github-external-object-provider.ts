@@ -106,7 +106,7 @@ function displayTitleFor(identity: GitHubObjectIdentity) {
 }
 
 function displayKeyFor(identity: Pick<GitHubObjectIdentity, "objectType">) {
-  return identity.objectType === "pull_request" ? "Github Pull Request" : "Github Issue";
+  return identity.objectType === "pull_request" ? "GitHub Pull Request" : "GitHub Issue";
 }
 
 function retryAfterSeconds(response: Response) {

@@ -182,7 +182,7 @@ describe("GitHub external object provider", () => {
         providerKey: "github",
         objectType: "pull_request",
         externalId: "acme/app#pull/42",
-        displayKey: "Github Pull Request",
+        displayKey: "GitHub Pull Request",
         iconKey: "github",
         displayTitle: "Acme/App#42",
       }),
@@ -190,7 +190,7 @@ describe("GitHub external object provider", () => {
         providerKey: "github",
         objectType: "issue",
         externalId: "acme/app#issues/7",
-        displayKey: "Github Issue",
+        displayKey: "GitHub Issue",
         iconKey: "github",
         displayTitle: "Acme/App#7",
       }),
@@ -239,7 +239,7 @@ describe("GitHub external object provider", () => {
       ok: true,
       snapshot: expect.objectContaining({
         ...expected,
-        displayKey: "Github Pull Request",
+        displayKey: "GitHub Pull Request",
         iconKey: "github",
         displayTitle: expect.stringContaining(String(body.title)),
         remoteVersion: "2026-04-24T01:02:03Z",
@@ -281,7 +281,7 @@ describe("GitHub external object provider", () => {
       ok: true,
       snapshot: expect.objectContaining({
         ...expected,
-        displayKey: "Github Issue",
+        displayKey: "GitHub Issue",
         iconKey: "github",
         data: expect.objectContaining({
           provider: "github",
@@ -330,7 +330,7 @@ describe("GitHub external object provider", () => {
     [
       "not-found",
       new Response("", { status: 404, headers: { etag: '"missing"' } }),
-      { ok: true, snapshot: expect.objectContaining({ displayKey: "Github Pull Request", iconKey: "github", statusKey: "not_found", statusIconKey: "archive", statusCategory: "archived", statusTone: "muted" }) },
+      { ok: true, snapshot: expect.objectContaining({ displayKey: "GitHub Pull Request", iconKey: "github", statusKey: "not_found", statusIconKey: "archive", statusCategory: "archived", statusTone: "muted" }) },
     ],
   ])("maps %s responses to provider-safe results", async (_name, githubResponse, expected) => {
     const provider = createGitHubExternalObjectProvider({} as any, {
@@ -466,7 +466,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
           ok: false,
           liveness: "auth_required",
           errorCode: "auth_required",
-          errorMessage: "token failed for https://github.com/acme/app/pull/42?token=secret",
+          errorMessage: "token=secret failed for https://github.com/acme/app/pull/42?token=secret",
           retryAfterSeconds: 60,
         })
         .mockResolvedValueOnce({
@@ -483,6 +483,11 @@ describeEmbeddedPostgres("externalObjectService", () => {
 
     await svc.refreshObject(object.id, { companyId, force: true });
     await svc.refreshObject(object.id, { companyId, force: true });
+
+    const authFailure = await db.select().from(externalObjects).then((rows) => rows[0]!);
+    expect(authFailure.lastErrorMessage).toContain("token=[redacted]");
+    expect(authFailure.lastErrorMessage).not.toContain("secret");
+
     await svc.refreshObject(object.id, { companyId, force: true });
 
     const updated = await db.select().from(externalObjects).then((rows) => rows[0]!);
@@ -491,6 +496,40 @@ describeEmbeddedPostgres("externalObjectService", () => {
     expect(updated.liveness).toBe("unreachable");
     expect(updated.lastErrorMessage).toContain("[redacted-url]");
     expect(updated.lastErrorMessage).not.toContain("secret");
+  });
+
+  it("skips terminal objects when refreshing due objects", async () => {
+    const { companyId, issueId } = await createIssue();
+    const resolve = vi.fn(async () => ({
+      ok: true as const,
+      snapshot: {
+        statusCategory: "closed" as const,
+        statusTone: "muted" as const,
+        statusKey: "closed",
+        statusLabel: "Closed",
+        isTerminal: true,
+        ttlSeconds: 1,
+      },
+    }));
+    const resolver: ExternalObjectResolver = {
+      providerKey: "url",
+      objectType: "link",
+      resolve,
+    };
+    const svc = externalObjectService(db, { resolvers: [resolver], github: false });
+    await svc.syncIssue(issueId);
+    const object = await db.select().from(externalObjects).then((rows) => rows[0]!);
+
+    await svc.refreshObject(object.id, { companyId, force: true });
+    await db
+      .update(externalObjects)
+      .set({ nextRefreshAt: new Date(0) })
+      .where(eq(externalObjects.id, object.id));
+
+    const refreshed = await svc.refreshDueObjects(companyId);
+
+    expect(refreshed).toEqual([]);
+    expect(resolve).toHaveBeenCalledTimes(1);
   });
 
   it("keeps external object identities company-scoped for duplicate urls", async () => {
