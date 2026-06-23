@@ -529,6 +529,28 @@ describeEmbeddedPostgres("externalObjectService", () => {
     expect(resolve).toHaveBeenCalledTimes(1);
   });
 
+  it("removes comment mentions when a synced comment is hard-deleted", async () => {
+    const { companyId, issueId } = await createIssue();
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorType: "user",
+      authorUserId: "local-board",
+      body: "See https://github.com/acme/app/issues/88",
+    });
+    const svc = externalObjectService(db, { github: false });
+
+    await svc.syncComment(commentId);
+    expect(await db.select().from(externalObjectMentions)).toHaveLength(1);
+
+    await db.delete(issueComments).where(eq(issueComments.id, commentId));
+    await svc.syncComment(commentId);
+
+    expect(await db.select().from(externalObjectMentions)).toHaveLength(0);
+  });
+
   it("skips terminal objects when refreshing due objects", async () => {
     const { companyId, issueId } = await createIssue();
     const resolve = vi.fn(async () => ({

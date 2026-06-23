@@ -527,7 +527,12 @@ export function externalObjectService(
         .from(issueComments)
         .where(eq(issueComments.id, commentId))
         .then((rows: Array<{ id: string; companyId: string; issueId: string; body: string }>) => rows[0] ?? null);
-      if (!comment) throw notFound("Issue comment not found");
+      if (!comment) {
+        await tx
+          .delete(externalObjectMentions)
+          .where(and(eq(externalObjectMentions.sourceKind, "comment"), eq(externalObjectMentions.sourceRecordId, commentId)));
+        return;
+      }
       await replaceSourceMentions({
         companyId: comment.companyId,
         sourceIssueId: comment.issueId,
