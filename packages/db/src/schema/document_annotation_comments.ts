@@ -1,5 +1,6 @@
 import type { IssueCommentAuthorType } from "@paperclipai/shared";
-import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { check, index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { documentAnnotationThreads } from "./document_annotation_threads.js";
@@ -50,5 +51,9 @@ export const documentAnnotationComments = pgTable(
     ),
     issueCommentIdx: index("document_annotation_comments_issue_comment_idx").on(table.issueCommentId),
     bodySearchIdx: index("document_annotation_comments_body_search_idx").using("gin", table.body.op("gin_trgm_ops")),
+    ownerCheck: check(
+      "document_annotation_comments_owner_check",
+      sql`${table.issueId} IS NOT NULL OR ${table.routineId} IS NOT NULL`,
+    ),
   }),
 );
