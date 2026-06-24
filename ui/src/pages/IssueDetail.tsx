@@ -1563,6 +1563,7 @@ export function IssueDetail() {
   const showPlanDecompositionsSection =
     instanceExperimentalSettings?.enableIssuePlanDecompositions === true;
   const fileViewerEnabled = instanceExperimentalSettings?.enableExperimentalFileViewer === true;
+  const taskWatchdogsEnabled = instanceExperimentalSettings?.enableTaskWatchdogs === true;
   const { orderedProjects } = useProjectOrder({
     projects: projects ?? [],
     companyId: selectedCompanyId,
@@ -4234,7 +4235,7 @@ export function IssueDetail() {
               successfulRunHandoff={issue.successfulRunHandoff ?? null}
               scheduledRetry={issue.scheduledRetry ?? null}
               recoveryAction={issue.activeRecoveryAction ?? null}
-              watchdog={issue.watchdog ?? null}
+              watchdog={taskWatchdogsEnabled ? issue.watchdog ?? null : null}
               monitorNextCheckAt={issue.monitorNextCheckAt ?? null}
               onResolveRecoveryAction={handleResolveRecoveryAction}
               canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}
