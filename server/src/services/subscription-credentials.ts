@@ -56,29 +56,14 @@ function assertKindMatchesProvider(
   }
 }
 
-// Build non-sensitive redacted metadata for read models. Only safe hints (no
-// secret material) are stored or returned.
-function buildRedactedMetadata(
-  kind: SubscriptionCredentialKind,
-  material: string,
-): Record<string, unknown> {
-  const length = material.length;
-  if (kind === "claude_oauth_token") {
-    const suffix = material.length >= 4 ? material.slice(-4) : null;
-    return { kind, materialLength: length, tokenSuffix: suffix };
-  }
-  // JSON credential documents: surface only the top-level key names so the UI
-  // can hint at shape without exposing values.
-  let jsonKeys: string[] | null = null;
-  try {
-    const parsed = JSON.parse(material) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      jsonKeys = Object.keys(parsed as Record<string, unknown>).sort();
-    }
-  } catch {
-    jsonKeys = null;
-  }
-  return { kind, materialLength: length, jsonKeys };
+// Build redacted metadata from the declared credential kind only. Do not derive
+// this record from plaintext credential material; even suffixes, lengths, or
+// JSON key names are treated as credential-derived data.
+function buildRedactedMetadata(kind: SubscriptionCredentialKind): Record<string, unknown> {
+  return {
+    kind,
+    materialFormat: kind === "claude_oauth_token" ? "token" : "json",
+  };
 }
 
 function toReadModel(row: CredentialRow): SubscriptionCredentialReadModel {
@@ -156,7 +141,7 @@ export function subscriptionCredentialService(db: Db) {
       const provider = getSecretProvider(ENCRYPTION_PROVIDER);
       const prepared = await provider.createSecret({ value: input.material });
       const now = new Date();
-      const redactedMetadata = buildRedactedMetadata(input.credentialKind, input.material);
+      const redactedMetadata = buildRedactedMetadata(input.credentialKind);
 
       const [row] = await db
         .insert(userSubscriptionCredentials)

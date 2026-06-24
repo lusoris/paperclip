@@ -29,7 +29,7 @@ export const userSubscriptionCredentials = pgTable(
     material: jsonb("material").$type<Record<string, unknown>>().notNull(),
     // SHA-256 of the plaintext credential, for change detection / audit only.
     valueSha256: text("value_sha256").notNull(),
-    // Non-sensitive redacted preview metadata (e.g. token length, suffix hint).
+    // Safe metadata derived from credential kind only; never from plaintext.
     redactedMetadata: jsonb("redacted_metadata").$type<Record<string, unknown>>(),
     status: text("status").notNull().default("active"),
     lastTestedAt: timestamp("last_tested_at", { withTimezone: true }),

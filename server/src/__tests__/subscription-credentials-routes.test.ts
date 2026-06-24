@@ -55,7 +55,7 @@ const REDACTED_CREDENTIAL = {
   credentialKind: "claude_oauth_token",
   status: "active",
   testStatus: "untested",
-  redactedMetadata: { kind: "claude_oauth_token", materialLength: 40, tokenSuffix: "abcd" },
+  redactedMetadata: { kind: "claude_oauth_token", materialFormat: "token" },
   lastTestedAt: null,
   lastResolvedAt: null,
   createdAt: "2026-01-01T00:00:00.000Z",
@@ -81,6 +81,7 @@ describe("subscription credential routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual([REDACTED_CREDENTIAL]);
+    expect(Object.keys(res.body[0].redactedMetadata).sort()).toEqual(["kind", "materialFormat"]);
     expect(mockSvc.list).toHaveBeenCalledWith("company-1", "user-1");
   });
 

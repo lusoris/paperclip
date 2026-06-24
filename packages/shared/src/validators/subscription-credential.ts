@@ -71,7 +71,7 @@ export const subscriptionCredentialReadModelSchema = z.object({
   credentialKind: subscriptionCredentialKindSchema,
   status: subscriptionCredentialStatusSchema,
   testStatus: subscriptionCredentialTestStatusSchema,
-  // Non-sensitive hints only (e.g. material length, last 4 chars of a token).
+  // Safe metadata only; must not be derived from plaintext credential material.
   redactedMetadata: z.record(z.string(), z.unknown()).nullable(),
   lastTestedAt: z.string().datetime().nullable(),
   lastResolvedAt: z.string().datetime().nullable(),

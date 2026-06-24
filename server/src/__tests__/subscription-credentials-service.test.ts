@@ -100,20 +100,20 @@ function makeFakeDb(options: {
 describe("subscriptionCredentialService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockSecretProvider.createSecret.mockResolvedValue({
+    mockSecretProvider.createSecret.mockImplementation(async ({ value }: { value: string }) => ({
       material: ENCRYPTED_MATERIAL,
-      valueSha256: sha256Hex("plain-token"),
-    });
+      valueSha256: sha256Hex(value),
+    }));
     mockSecretProvider.resolveVersion.mockResolvedValue("plain-token");
   });
 
   it("encrypts credential material before persistence and returns only a redacted read model", async () => {
+    const credentialMaterial = "plain-secret-1234";
     const returnedRow = makeCredentialRow({
       material: ENCRYPTED_MATERIAL,
       redactedMetadata: {
         kind: "claude_oauth_token",
-        materialLength: "plain-token".length,
-        tokenSuffix: "oken",
+        materialFormat: "token",
       },
     });
     const { db, state } = makeFakeDb({ insertReturningRow: returnedRow });
@@ -124,23 +124,71 @@ describe("subscriptionCredentialService", () => {
       userId: returnedRow.userId,
       provider: returnedRow.provider as SubscriptionCredentialProvider,
       credentialKind: "claude_oauth_token",
-      material: "plain-token",
+      material: credentialMaterial,
     });
 
     expect(getSecretProvider).toHaveBeenCalledWith("local_encrypted");
-    expect(mockSecretProvider.createSecret).toHaveBeenCalledWith({ value: "plain-token" });
+    expect(mockSecretProvider.createSecret).toHaveBeenCalledWith({ value: credentialMaterial });
     expect(state.insertedValues).toMatchObject({
       material: ENCRYPTED_MATERIAL,
-      valueSha256: sha256Hex("plain-token"),
+      valueSha256: sha256Hex(credentialMaterial),
     });
-    expect(state.insertedValues).not.toMatchObject({ material: "plain-token" });
+    expect(state.insertedValues).not.toMatchObject({ material: credentialMaterial });
     expect(result).toMatchObject({
       id: returnedRow.id,
       provider: "claude",
       credentialKind: "claude_oauth_token",
-      redactedMetadata: expect.objectContaining({ tokenSuffix: "oken" }),
+      redactedMetadata: { kind: "claude_oauth_token", materialFormat: "token" },
     });
     expect(result).not.toHaveProperty("material");
+    expect(JSON.stringify(result)).not.toContain(credentialMaterial);
+    expect(JSON.stringify(result)).not.toContain("1234");
+    expect(state.insertedValues?.redactedMetadata).toEqual({
+      kind: "claude_oauth_token",
+      materialFormat: "token",
+    });
+    expect(JSON.stringify(state.insertedValues?.redactedMetadata)).not.toContain("1234");
+  });
+
+  it("does not derive JSON key names into redacted metadata", async () => {
+    const codexJson = JSON.stringify({
+      accessToken: "access-secret",
+      refreshToken: "refresh-secret",
+      accountId: "acct-1",
+    });
+    const returnedRow = makeCredentialRow({
+      provider: "codex",
+      credentialKind: "codex_auth_json",
+      redactedMetadata: {
+        kind: "codex_auth_json",
+        materialFormat: "json",
+      },
+    });
+    const { db, state } = makeFakeDb({ insertReturningRow: returnedRow });
+    const svc = subscriptionCredentialService(db);
+
+    const result = await svc.upsert({
+      companyId: returnedRow.companyId,
+      userId: returnedRow.userId,
+      provider: "codex",
+      credentialKind: "codex_auth_json",
+      material: codexJson,
+    });
+
+    expect(result.redactedMetadata).toEqual({
+      kind: "codex_auth_json",
+      materialFormat: "json",
+    });
+    expect(state.insertedValues?.redactedMetadata).toEqual({
+      kind: "codex_auth_json",
+      materialFormat: "json",
+    });
+    const metadataJson = JSON.stringify(state.insertedValues?.redactedMetadata);
+    expect(metadataJson).not.toContain("accessToken");
+    expect(metadataJson).not.toContain("refreshToken");
+    expect(metadataJson).not.toContain("accountId");
+    expect(metadataJson).not.toContain("access-secret");
+    expect(metadataJson).not.toContain("refresh-secret");
   });
 
   it("resolves decrypted material through the secret provider and records a redacted resolution timestamp", async () => {
