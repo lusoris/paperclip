@@ -4,43 +4,131 @@ on:
   workflow_dispatch:
     inputs:
       skip_llm:
-        description: "Skip LLM-dependent assertions (default: true)"
+        description: "Unused for PAP-11985 Hermes gateway smoke"
         type: boolean
         default: true
 
 jobs:
   e2e:
+    name: Hermes Gateway Docker Smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
-      PAPERCLIP_E2E_SKIP_LLM: ${{ inputs.skip_llm && 'true' || 'false' }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PAPERCLIP_HOME: ${{ runner.temp }}/paperclip-home
+      PAPERCLIP_INSTANCE_ID: hermes-gateway-smoke
+      PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
+      PAPERCLIP_MIGRATION_PROMPT: "never"
+      PAPERCLIP_DEPLOYMENT_MODE: local_trusted
+      SERVE_UI: "false"
+      HOST: 127.0.0.1
+      PORT: "3100"
+      PAPERCLIP_API_URL: http://127.0.0.1:3100
+      PAPERCLIP_AUTH_HEADER: Bearer local-trusted-hermes-smoke
+      HERMES_SMOKE_RUN_SUFFIX: gh-${{ github.run_id }}-${{ github.run_attempt }}
+      HERMES_CONTAINER_NAME: paperclip-hermes-gateway-smoke-gh-${{ github.run_id }}-${{ github.run_attempt }}
+      HERMES_SMOKE_NETWORK: host
+      HERMES_DOCKER_ADD_HOST: "0"
+      HERMES_GATEWAY_API_BASE_URL: http://127.0.0.1:8642
+      HERMES_GATEWAY_PROBE_URL: http://127.0.0.1:8642
+      PAPERCLIP_API_URL_FOR_HERMES: http://127.0.0.1:3100
+      HERMES_SMOKE_DIAG_DIR: ${{ runner.temp }}/hermes-gateway-diag
+      HERMES_SMOKE_STATE_DIR: ${{ runner.temp }}/hermes-gateway-state
+      RUN_TIMEOUT_SEC: "420"
+      CASE_TIMEOUT_SEC: "420"
+
     steps:
       - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
         with:
-          version: 9
+          version: 9.15.4
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build
-      - run: google-chrome --version
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
-      - name: Run e2e tests
-        env:
-          PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
-        run: pnpm run test:e2e
+      - name: Record Docker runner details
+        run: |
+          set -euo pipefail
+          docker version
+          docker info
 
-      - uses: actions/upload-artifact@v7
+      - name: Start ephemeral Paperclip
+        run: |
+          set -euo pipefail
+          nohup pnpm --filter @paperclipai/server dev >"$RUNNER_TEMP/paperclip-server.log" 2>&1 &
+          echo "$!" >"$RUNNER_TEMP/paperclip-server.pid"
+          for _ in $(seq 1 180); do
+            if curl -fsS "$PAPERCLIP_API_URL/api/health" >"$RUNNER_TEMP/paperclip-health.json"; then
+              cat "$RUNNER_TEMP/paperclip-health.json"
+              exit 0
+            fi
+            if ! kill -0 "$(cat "$RUNNER_TEMP/paperclip-server.pid")" 2>/dev/null; then
+              cat "$RUNNER_TEMP/paperclip-server.log"
+              exit 1
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/paperclip-server.log"
+          exit 1
+
+      - name: Create smoke company
+        run: |
+          set -euo pipefail
+          curl -fsS \
+            -X POST \
+            -H "Authorization: $PAPERCLIP_AUTH_HEADER" \
+            -H "Content-Type: application/json" \
+            --data '{"name":"Hermes Gateway Smoke","description":"PAP-11985 GitHub Docker runner smoke"}' \
+            "$PAPERCLIP_API_URL/api/companies" \
+            | tee "$RUNNER_TEMP/paperclip-company.json"
+          jq '{id,name,issuePrefix,status}' "$RUNNER_TEMP/paperclip-company.json"
+
+      - name: Run Hermes gateway Docker E2E smoke
+        run: |
+          set -euo pipefail
+          pnpm smoke:hermes-gateway-e2e 2>&1 | tee "$RUNNER_TEMP/hermes-gateway-e2e.log"
+
+      - name: Summarize smoke
         if: always()
+        run: |
+          {
+            echo "### Hermes Gateway Docker Smoke"
+            echo
+            echo "- Runner: GitHub Actions ubuntu-latest"
+            echo "- Network mode: Docker host network"
+            echo "- Paperclip API: $PAPERCLIP_API_URL"
+            echo "- Hermes gateway API/probe: $HERMES_GATEWAY_API_BASE_URL / $HERMES_GATEWAY_PROBE_URL"
+            echo
+            if [[ -f "$HERMES_SMOKE_DIAG_DIR/summary.env" ]]; then
+              echo '```'
+              sed -E 's/(sha256=)[a-f0-9]+/\1<redacted>/g' "$HERMES_SMOKE_DIAG_DIR/summary.env"
+              echo '```'
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
         with:
-          name: playwright-report
+          name: hermes-gateway-smoke-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            tests/e2e/playwright-report/
-            tests/e2e/test-results/
+            ${{ runner.temp }}/paperclip-server.log
+            ${{ runner.temp }}/paperclip-health.json
+            ${{ runner.temp }}/paperclip-company.json
+            ${{ runner.temp }}/hermes-gateway-e2e.log
+            ${{ runner.temp }}/hermes-gateway-diag/
           retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Cleanup
+        if: always()
+        run: |
+          if [[ -f "$RUNNER_TEMP/paperclip-server.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/paperclip-server.pid")" 2>/dev/null || true
+          fi
+          docker rm -f "$HERMES_CONTAINER_NAME" >/dev/null 2>&1 || true
