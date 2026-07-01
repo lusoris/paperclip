@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   AGENT_ADAPTER_TYPES,
   cancelEnvironmentCustomImageSetupSessionSchema,
+  createEnvironmentCustomImageTerminalSessionTokenSchema,
   createEnvironmentSchema,
   finishEnvironmentCustomImageSetupSessionSchema,
   getEnvironmentCapabilities,
@@ -21,6 +22,10 @@ import {
   logActivity,
   projectService,
 } from "../services/index.js";
+import {
+  environmentCustomImageTerminalSessionStore,
+  parseCustomImageSetupSshCommand,
+} from "../services/environment-custom-image-terminal-sessions.js";
 import {
   collectEnvironmentSecretRefs,
   normalizeEnvironmentConfigForPersistence,
@@ -293,6 +298,26 @@ export function environmentRoutes(
     });
   }
 
+  function readDate(value: unknown): Date | null {
+    if (!value) return null;
+    const date = value instanceof Date ? value : typeof value === "string" ? new Date(value) : null;
+    return date && !Number.isNaN(date.getTime()) ? date : null;
+  }
+
+  function requireFutureSetupExpiry(session: { expiresAt: Date | string | null }, now: Date): Date {
+    const expiresAt = readDate(session.expiresAt);
+    if (!expiresAt || expiresAt.getTime() <= now.getTime()) {
+      throw conflict("Environment customImage setup session has expired.");
+    }
+    return expiresAt;
+  }
+
+  function readConnectionPayload(payload: unknown): Record<string, unknown> | null {
+    return payload && typeof payload === "object" && !Array.isArray(payload)
+      ? payload as Record<string, unknown>
+      : null;
+  }
+
   router.get("/companies/:companyId/environments", async (req, res) => {
     assertCanReadInstanceEnvironments(req);
     const rows = await svc.list({
@@ -389,6 +414,81 @@ export function environmentRoutes(
     });
     res.json(result);
   });
+
+  router.post(
+    "/environment-custom-image-setup-sessions/:sessionId/terminal-session-token",
+    validate(createEnvironmentCustomImageTerminalSessionTokenSchema),
+    async (req, res) => {
+      assertCanAccessInstanceEnvironments(req);
+      const session = await customImages.getSessionById(req.params.sessionId as string);
+      if (!session) {
+        res.status(404).json({ error: "Environment customImage setup session not found" });
+        return;
+      }
+      assertCustomImageCompanyAccess(req, session.companyId);
+
+      const refreshed = await customImages.refreshSetupSession({
+        sessionId: session.id,
+        includeConnectionPayload: true,
+      });
+      const now = new Date();
+      if (refreshed.session.status !== "waiting_for_user") {
+        throw conflict(`Cannot create terminal session token from setup status "${refreshed.session.status}".`);
+      }
+      const setupExpiresAt = requireFutureSetupExpiry(refreshed.session, now);
+      const payload = readConnectionPayload(refreshed.connectionPayload);
+      if (!payload || payload.type !== "ssh") {
+        throw unprocessable("Setup session terminal connections require an SSH connection payload.");
+      }
+      const command = typeof payload.command === "string" ? payload.command.trim() : "";
+      if (!command) {
+        throw unprocessable("Setup session SSH payload is missing a supported command.");
+      }
+      const ssh = parseCustomImageSetupSshCommand(command);
+      if (!ssh) {
+        throw unprocessable("Setup session SSH payload uses an unsupported command shape.");
+      }
+      const connectionExpiresAt = readDate(payload.expiresAt);
+      if (payload.expiresAt != null && !connectionExpiresAt) {
+        throw unprocessable("Setup session SSH payload has an invalid expiry.");
+      }
+      if (connectionExpiresAt && connectionExpiresAt.getTime() <= now.getTime()) {
+        throw conflict("Setup session SSH connection payload has expired.");
+      }
+
+      const minted = environmentCustomImageTerminalSessionStore.create({
+        setupSessionId: refreshed.session.id,
+        companyId: refreshed.session.companyId,
+        environmentId: refreshed.session.environmentId,
+        provider: refreshed.session.provider,
+        ssh,
+        setupExpiresAt,
+        connectionExpiresAt,
+        now,
+      });
+      const actor = getActorInfo(req);
+      await logEnvironmentCustomImageActivity({
+        actor,
+        companyId: refreshed.session.companyId,
+        action: "environment.custom_image_terminal_session_token.created",
+        entityId: refreshed.session.environmentId,
+        details: {
+          session: setupSessionActivityDetails(refreshed.session),
+          terminalSession: {
+            connectionType: "ssh",
+            expiresAt: minted.session.expiresAt.toISOString(),
+          },
+        },
+      });
+      res.status(201).json({
+        token: minted.token,
+        expiresAt: minted.session.expiresAt.toISOString(),
+        setupSessionId: minted.session.setupSessionId,
+        environmentId: minted.session.environmentId,
+        connectionType: "ssh",
+      });
+    },
+  );
 
   router.post(
     "/environment-custom-image-setup-sessions/:sessionId/finish",

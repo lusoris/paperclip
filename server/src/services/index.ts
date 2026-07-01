@@ -89,6 +89,14 @@ export {
 export {
   environmentCustomImageService,
 } from "./environment-custom-images.js";
+export {
+  environmentCustomImageTerminalSessionStore,
+  EnvironmentCustomImageTerminalSessionStore,
+  parseCustomImageSetupSshCommand,
+  type EnvironmentCustomImageTerminalSessionRecord,
+  type MintedEnvironmentCustomImageTerminalSession,
+  type ParsedCustomImageSetupSshCommand,
+} from "./environment-custom-image-terminal-sessions.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
 export { workspaceOperationService } from "./workspace-operations.js";
 export { workspaceFileResourceService } from "./workspace-file-resources.js";

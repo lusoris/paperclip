@@ -11,6 +11,7 @@ export const API = {
   environmentCustomImageTemplateRollback: `${API_PREFIX}/environments/:environmentId/custom-image-template/rollback`,
   environmentCustomImageSetupSessions: `${API_PREFIX}/environments/:environmentId/custom-image-setup-sessions`,
   environmentCustomImageSetupSession: `${API_PREFIX}/environment-custom-image-setup-sessions/:sessionId`,
+  environmentCustomImageSetupSessionTerminalToken: `${API_PREFIX}/environment-custom-image-setup-sessions/:sessionId/terminal-session-token`,
   environmentCustomImageSetupSessionFinish: `${API_PREFIX}/environment-custom-image-setup-sessions/:sessionId/finish`,
   environmentCustomImageSetupSessionCancel: `${API_PREFIX}/environment-custom-image-setup-sessions/:sessionId/cancel`,
   issues: `${API_PREFIX}/issues`,
