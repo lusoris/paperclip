@@ -672,6 +672,7 @@ export type {
   IssueExecutionMonitorState,
   IssueRelation,
   IssueRelationIssueSummary,
+  IssueProjectSummary,
   IssueExecutionPolicy,
   IssueExecutionState,
   IssueExecutionStage,

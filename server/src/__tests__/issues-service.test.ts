@@ -417,6 +417,7 @@ describeEmbeddedPostgres("issueService project memberships", () => {
 
     expect(await listIssueProjects(issue.id)).toEqual([
       { projectId: projectTwo.id, isPrimary: true },
+      { projectId: projectOne.id, isPrimary: false },
     ]);
     expect(await getIssueProjectId(issue.id)).toBe(projectTwo.id);
 
@@ -463,6 +464,173 @@ describeEmbeddedPostgres("issueService project memberships", () => {
       status: 422,
       message: "Archived projects cannot be attached to issues",
     });
+  });
+
+  it("accepts projectIds on create and filters list/count by any membership", async () => {
+    const companyId = await seedCompany();
+    const [projectOne, projectTwo, projectThree] = await Promise.all([
+      seedProject(companyId, { name: "One" }),
+      seedProject(companyId, { name: "Two" }),
+      seedProject(companyId, { name: "Three" }),
+    ]);
+
+    const issue = await svc.create(companyId, {
+      title: "Multi-project issue",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      projectId: projectThree.id,
+      projectIds: [projectOne.id, projectTwo.id, projectOne.id],
+    });
+    await svc.create(companyId, {
+      title: "Primary-only issue",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      projectId: projectThree.id,
+    });
+
+    expect(issue.projectId).toBe(projectOne.id);
+    expect(issue.projects).toEqual([
+      expect.objectContaining({ id: projectOne.id, name: "One", isPrimary: true }),
+      expect.objectContaining({ id: projectTwo.id, name: "Two", isPrimary: false }),
+    ]);
+    expect(await listIssueProjects(issue.id)).toEqual([
+      { projectId: projectOne.id, isPrimary: true },
+      { projectId: projectTwo.id, isPrimary: false },
+    ]);
+
+    const secondaryProjectIssues = await svc.list(companyId, { projectId: projectTwo.id });
+    expect(secondaryProjectIssues.map((row) => row.id)).toEqual([issue.id]);
+    expect(secondaryProjectIssues[0]?.projects).toEqual([
+      expect.objectContaining({ id: projectOne.id, isPrimary: true }),
+      expect.objectContaining({ id: projectTwo.id, isPrimary: false }),
+    ]);
+    await expect(svc.count(companyId, { projectId: projectTwo.id })).resolves.toBe(1);
+
+    const detail = await svc.getById(issue.id);
+    expect(detail?.projects).toEqual([
+      expect.objectContaining({ id: projectOne.id, isPrimary: true }),
+      expect.objectContaining({ id: projectTwo.id, isPrimary: false }),
+    ]);
+  });
+
+  it("lets projectIds win over projectId on update and clears memberships with an empty array", async () => {
+    const companyId = await seedCompany();
+    const [projectOne, projectTwo, projectThree] = await Promise.all([
+      seedProject(companyId, { name: "One" }),
+      seedProject(companyId, { name: "Two" }),
+      seedProject(companyId, { name: "Three" }),
+    ]);
+    const issue = await svc.create(companyId, {
+      title: "Update project ids",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      projectIds: [projectOne.id, projectTwo.id],
+    });
+
+    const projectIdsWin = await svc.update(issue.id, {
+      projectId: projectThree.id,
+      projectIds: [projectTwo.id],
+    });
+    expect(projectIdsWin?.projectId).toBe(projectTwo.id);
+    expect(await listIssueProjects(issue.id)).toEqual([
+      { projectId: projectTwo.id, isPrimary: true },
+    ]);
+
+    const cleared = await svc.update(issue.id, { projectIds: [] });
+    expect(cleared?.projectId).toBeNull();
+    expect(cleared?.projects).toEqual([]);
+    expect(await listIssueProjects(issue.id)).toEqual([]);
+  });
+
+  it("keeps secondary memberships when legacy projectId changes the primary on patch", async () => {
+    const companyId = await seedCompany();
+    const [projectOne, projectTwo, projectThree] = await Promise.all([
+      seedProject(companyId, { name: "One" }),
+      seedProject(companyId, { name: "Two" }),
+      seedProject(companyId, { name: "Three" }),
+    ]);
+    const issue = await svc.create(companyId, {
+      title: "Legacy primary patch",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      projectIds: [projectOne.id, projectTwo.id],
+    });
+
+    const updated = await svc.update(issue.id, { projectId: projectThree.id });
+
+    expect(updated?.projectId).toBe(projectThree.id);
+    expect(await listIssueProjects(issue.id)).toEqual([
+      { projectId: projectThree.id, isPrimary: true },
+      { projectId: projectOne.id, isPrimary: false },
+      { projectId: projectTwo.id, isPrimary: false },
+    ]);
+  });
+
+  it("inherits full parent project membership for children unless projectIds is explicit", async () => {
+    const companyId = await seedCompany();
+    const [projectOne, projectTwo, projectThree] = await Promise.all([
+      seedProject(companyId, { name: "One" }),
+      seedProject(companyId, { name: "Two" }),
+      seedProject(companyId, { name: "Three" }),
+    ]);
+    const parent = await svc.create(companyId, {
+      title: "Parent",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      projectIds: [projectOne.id, projectTwo.id],
+    });
+
+    const inherited = await svc.createChild(parent.id, {
+      title: "Inherited child",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+    expect(await listIssueProjects(inherited.issue.id)).toEqual([
+      { projectId: projectOne.id, isPrimary: true },
+      { projectId: projectTwo.id, isPrimary: false },
+    ]);
+
+    const explicit = await svc.createChild(parent.id, {
+      title: "Explicit child",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      projectIds: [projectThree.id],
+    });
+    expect(await listIssueProjects(explicit.issue.id)).toEqual([
+      { projectId: projectThree.id, isPrimary: true },
+    ]);
+  });
+
+  it("falls back to a legacy scalar parent project when child inheritance has no membership rows", async () => {
+    const companyId = await seedCompany();
+    const project = await seedProject(companyId, { name: "Legacy" });
+    const parent = await svc.create(companyId, {
+      title: "Scalar parent",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      projectId: project.id,
+    });
+    await db.delete(issueProjects).where(eq(issueProjects.issueId, parent.id));
+
+    const inherited = await svc.createChild(parent.id, {
+      title: "Legacy inherited child",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    expect(inherited.issue.projectId).toBe(project.id);
+    expect(await listIssueProjects(inherited.issue.id)).toEqual([
+      { projectId: project.id, isPrimary: true },
+    ]);
   });
 
   it("promotes the oldest remaining membership when the primary project is removed", async () => {

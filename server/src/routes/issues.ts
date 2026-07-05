@@ -2037,6 +2037,15 @@ export function issueRoutes(
     return parent.projectId ?? null;
   }
 
+  function primaryProjectIdFromIssueBody(
+    body: { projectId?: string | null; projectIds?: string[] },
+    fallbackProjectId: string | null = null,
+  ) {
+    if (Array.isArray(body.projectIds)) return body.projectIds[0] ?? null;
+    if (body.projectId !== undefined) return body.projectId;
+    return fallbackProjectId;
+  }
+
   async function assertCanAssignTasks(
     req: Request,
     companyId: string,
@@ -5315,6 +5324,11 @@ export function issueRoutes(
             stopFingerprint: watchdogProductBugFollowUp.scope.stopFingerprint,
             runId: actor.runId,
           }),
+          ...(rawCreateBody.projectIds === undefined && rawCreateBody.projectId === undefined
+            && watchdogProductBugFollowUp.sourceIssue.projects
+            && watchdogProductBugFollowUp.sourceIssue.projects.length > 0
+              ? { projectIds: watchdogProductBugFollowUp.sourceIssue.projects.map((project) => project.id) }
+              : {}),
           projectId: rawCreateBody.projectId ?? watchdogProductBugFollowUp.sourceIssue.projectId,
           goalId: rawCreateBody.goalId ?? watchdogProductBugFollowUp.sourceIssue.goalId,
           billingCode: rawCreateBody.billingCode ?? watchdogProductBugFollowUp.sourceIssue.billingCode,
@@ -5329,11 +5343,12 @@ export function issueRoutes(
         }
         : {}),
     };
+    const createPrimaryProjectId = primaryProjectIdFromIssueBody(createBody);
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
     const createAssignmentScope = {
       projectId: await resolveAssignmentProjectId({
         companyId,
-        projectId: createBody.projectId,
+        projectId: createPrimaryProjectId,
         parentIssueId: createBody.parentId,
       }),
       parentIssueId: createBody.parentId ?? null,
@@ -5355,7 +5370,7 @@ export function issueRoutes(
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
       companyId,
-      projectId: createBody.projectId ?? null,
+      projectId: createPrimaryProjectId,
       executionPolicy,
     }, actor);
     const issue = await svc.create(companyId, {
@@ -5499,8 +5514,9 @@ export function issueRoutes(
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
+    const childPrimaryProjectId = primaryProjectIdFromIssueBody(createBody, parent.projectId ?? null);
     const childAssignmentScope = {
-      projectId: createBody.projectId ?? parent.projectId ?? null,
+      projectId: childPrimaryProjectId,
       parentIssueId: parent.id,
       assigneeAgentId: createBody.assigneeAgentId ?? null,
       assigneeUserId: createBody.assigneeUserId ?? null,
@@ -5525,7 +5541,7 @@ export function issueRoutes(
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
       companyId: parent.companyId,
-      projectId: createBody.projectId ?? parent.projectId ?? null,
+      projectId: childPrimaryProjectId,
       executionPolicy,
     }, actor);
     const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
@@ -5684,7 +5700,7 @@ export function issueRoutes(
       if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, sourceIssue, childBody))) return;
       if (childBody.assigneeAgentId || childBody.assigneeUserId) {
         await assertCanAssignTasks(req, sourceIssue.companyId, {
-          projectId: childBody.projectId ?? sourceIssue.projectId ?? null,
+          projectId: primaryProjectIdFromIssueBody(childBody, sourceIssue.projectId ?? null),
           parentIssueId: sourceIssue.id,
           assigneeAgentId: childBody.assigneeAgentId ?? null,
           assigneeUserId: childBody.assigneeUserId ?? null,
@@ -5705,7 +5721,7 @@ export function issueRoutes(
       const sourceTrust = await sourceTrustForActorWrite({
         id: childIssueId,
         companyId: sourceIssue.companyId,
-        projectId: child.projectId ?? sourceIssue.projectId ?? null,
+        projectId: primaryProjectIdFromIssueBody(child, sourceIssue.projectId ?? null),
         executionPolicy,
       }, actor);
       normalizedChildren.push({
@@ -6208,9 +6224,10 @@ export function issueRoutes(
           issueId: existing.id,
           projectId: await resolveAssignmentProjectId({
             companyId: existing.companyId,
-            projectId: updateFields.projectId === undefined
-              ? existing.projectId
-              : updateFields.projectId as string | null | undefined,
+            projectId: primaryProjectIdFromIssueBody(
+              updateFields as { projectId?: string | null; projectIds?: string[] },
+              existing.projectId,
+            ),
             parentIssueId: (updateFields.parentId === undefined
               ? existing.parentId
               : updateFields.parentId) as string | null | undefined,
