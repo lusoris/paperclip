@@ -166,6 +166,78 @@ describe("GET /health", () => {
     expect(res.body.warnings).toEqual(res.body.databaseBackup.warnings);
   });
 
+  it("ignores zero-byte backup archives when picking the latest backup", async () => {
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-backups-"));
+    const goodBackup = path.join(backupDir, "paperclip-20260705-031702.sql.gz");
+    fs.writeFileSync(goodBackup, "backup");
+    fs.utimesSync(
+      goodBackup,
+      new Date("2026-07-05T03:17:02.000Z"),
+      new Date("2026-07-05T03:17:02.000Z"),
+    );
+    const emptyBackup = path.join(backupDir, "paperclip-20260706-120000.sql.gz");
+    fs.writeFileSync(emptyBackup, "");
+    fs.utimesSync(
+      emptyBackup,
+      new Date("2026-07-06T12:00:00.000Z"),
+      new Date("2026-07-06T12:00:00.000Z"),
+    );
+    const app = createApp(createHealthyDb(), testServerInfo, {
+      enabled: true,
+      backupDir,
+      maxAgeHours: 26,
+      now: new Date("2026-07-06T13:00:00.000Z"),
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.databaseBackup).toMatchObject({
+      status: "warning",
+      latestBackup: {
+        name: "paperclip-20260705-031702.sql.gz",
+      },
+      warnings: [
+        {
+          code: "database_backup_stale",
+        },
+      ],
+    });
+  });
+
+  it("honors sub-hour max age thresholds", async () => {
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-backups-"));
+    const backupFile = path.join(backupDir, "paperclip-20260706-121500.sql.gz");
+    fs.writeFileSync(backupFile, "backup");
+    fs.utimesSync(
+      backupFile,
+      new Date("2026-07-06T12:15:00.000Z"),
+      new Date("2026-07-06T12:15:00.000Z"),
+    );
+    const app = createApp(createHealthyDb(), testServerInfo, {
+      enabled: true,
+      backupDir,
+      maxAgeHours: 0.5,
+      now: new Date("2026-07-06T13:00:00.000Z"),
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.databaseBackup).toMatchObject({
+      status: "warning",
+      maxAgeHours: 0.5,
+      latestBackup: {
+        ageHours: 0.8,
+      },
+      warnings: [
+        {
+          code: "database_backup_stale",
+        },
+      ],
+    });
+  });
+
   it("warns instead of reporting fresh when the latest backup mtime is in the future", async () => {
     const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-backups-"));
     const backupFile = path.join(backupDir, "paperclip-20260707-120000.sql.gz");

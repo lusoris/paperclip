@@ -93,6 +93,8 @@ async function findLatestBackup(backupDir: string, nowMs: number) {
       if (isMissingFileError(error)) continue;
       throw error;
     }
+    // Zero-byte archives are failed/partial dumps, not restorable backups.
+    if (fileStat.size === 0) continue;
     if (!latest || fileStat.mtimeMs > latest.mtimeMs) {
       latest = { fullPath, mtimeMs: fileStat.mtimeMs, size: fileStat.size };
     }
@@ -114,7 +116,8 @@ export async function inspectDatabaseBackupHealth(
 ): Promise<DatabaseBackupHealthStatus> {
   const warnings: DatabaseBackupHealthWarning[] = [];
   const now = opts.now ?? new Date();
-  const maxAgeHours = Math.max(1, opts.maxAgeHours);
+  const maxAgeHours =
+    Number.isFinite(opts.maxAgeHours) && opts.maxAgeHours > 0 ? opts.maxAgeHours : 1;
 
   let latestBackup: DatabaseBackupHealthStatus["latestBackup"] = null;
   let lastFailure: DatabaseBackupHealthStatus["lastFailure"] = null;
@@ -128,7 +131,7 @@ export async function inspectDatabaseBackupHealth(
     if (!latestBackup) {
       warnings.push({
         code: "database_backup_missing",
-        message: `No .sql.gz database backups found in ${opts.backupDir}.`,
+        message: `No non-empty .sql.gz database backups found in ${opts.backupDir}.`,
       });
     } else if (latestBackup.ageHours < 0) {
       warnings.push({
