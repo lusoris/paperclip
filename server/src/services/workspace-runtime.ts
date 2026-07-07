@@ -15,7 +15,7 @@ import {
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import {
@@ -944,35 +944,58 @@ async function reconcileForwardPersistedExecutionWorkspaceBranch(input: {
     );
   }
 
-  const now = new Date();
-  await input.db
-    .update(executionWorkspaces)
-    .set({
-      branchName: input.actualBranchName,
-      ...(existing.name === input.evidence.expectedBranch ? { name: input.actualBranchName } : {}),
-      updatedAt: now,
-    })
-    .where(eq(executionWorkspaces.id, existing.id));
+  // Guard: reject if another workspace already owns this branch name — adopting it
+  // would make an unrelated workspace authoritative for this branch.
+  const conflictingWorkspace = await input.db
+    .select({ id: executionWorkspaces.id })
+    .from(executionWorkspaces)
+    .where(
+      and(
+        eq(executionWorkspaces.companyId, existing.companyId),
+        eq(executionWorkspaces.branchName, input.actualBranchName),
+        ne(executionWorkspaces.id, existing.id),
+      ),
+    )
+    .then((rows) => rows[0] ?? null);
+  if (conflictingWorkspace) {
+    throw new Error(
+      `Cannot reconcile execution workspace ${input.executionWorkspaceId} to branch "${input.actualBranchName}": branch is already registered to workspace ${conflictingWorkspace.id}`,
+    );
+  }
 
-  const auditComment = existing.sourceIssueId
-    ? await input.db
-      .insert(issueComments)
-      .values({
-        companyId: existing.companyId,
-        issueId: existing.sourceIssueId,
-        authorAgentId: null,
-        authorUserId: null,
-        authorType: "system",
-        createdByRunId: input.heartbeatRunId ?? null,
-        body: formatForwardBranchReconcileComment({
-          workspaceId: existing.id,
-          evidence: input.evidence,
-          actualBranchName: input.actualBranchName,
-        }),
+  const now = new Date();
+  const auditComment = await input.db.transaction(async (tx) => {
+    await tx
+      .update(executionWorkspaces)
+      .set({
+        branchName: input.actualBranchName,
+        ...(existing.name === input.evidence.expectedBranch ? { name: input.actualBranchName } : {}),
+        updatedAt: now,
       })
-      .returning({ id: issueComments.id })
-      .then((rows) => rows[0] ?? null)
-    : null;
+      .where(eq(executionWorkspaces.id, existing.id));
+
+    const comment = existing.sourceIssueId
+      ? await tx
+        .insert(issueComments)
+        .values({
+          companyId: existing.companyId,
+          issueId: existing.sourceIssueId,
+          authorAgentId: null,
+          authorUserId: null,
+          authorType: "system",
+          createdByRunId: input.heartbeatRunId ?? null,
+          body: formatForwardBranchReconcileComment({
+            workspaceId: existing.id,
+            evidence: input.evidence,
+            actualBranchName: input.actualBranchName,
+          }),
+        })
+        .returning({ id: issueComments.id })
+        .then((rows) => rows[0] ?? null)
+      : null;
+
+    return comment;
+  });
 
   await logActivity(input.db, {
     companyId: existing.companyId,
