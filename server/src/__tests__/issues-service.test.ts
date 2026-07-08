@@ -2737,7 +2737,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
-  it("strips legacy environmentId values from execution workspace settings updates", async () => {
+  it("preserves explicit environmentId values on execution workspace settings updates", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -2804,6 +2804,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
     expect(overridden!.executionWorkspaceSettings).toEqual({
       mode: "shared_workspace",
+      environmentId: operatorEnvironmentId,
     });
 
     const reassigned = await svc.update(created.id, {
@@ -2811,6 +2812,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
     expect(reassigned!.executionWorkspaceSettings).toEqual({
       mode: "shared_workspace",
+      environmentId: operatorEnvironmentId,
     });
   });
 
@@ -4398,7 +4400,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(workspace?.metadata).toEqual({
       config: {
-        environmentId: null,
+        environmentId: "env-new",
         provisionCommand: "bash ./scripts/provision-new.sh",
         teardownCommand: "bash ./scripts/teardown-new.sh",
         cleanupCommand: null,
