@@ -314,6 +314,32 @@ export function Agents() {
     const agentJoinLeavePending = agentPending && membershipMutation.variables?.starred === undefined;
     const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     const builtInState = builtInByAgentId.get(agent.id);
+    // Provenance badge + lifecycle chip + inline `Set up`. Rendered inline in
+    // `meta` at xl (where there's room and the meta columns align) and on a
+    // dedicated full-width line beneath the name below xl, so the chips never
+    // starve the name — the row's primary identifier — at narrow widths.
+    const builtInCluster = builtInState ? (
+      <>
+        <BuiltInAgentBadge />
+        <BuiltInLifecycleChip status={builtInState.status} />
+        {builtInState.status === "needs_setup" && (
+          <span
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+          >
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => setConfigureState(builtInState)}
+            >
+              Set up
+            </Button>
+          </span>
+        )}
+      </>
+    ) : null;
     return (
       <EntityRow
         key={agent.id}
@@ -323,6 +349,10 @@ export function Agents() {
         // columns line up vertically. Agent names vary in width, so
         // a content-sized title (`min-w-(--sz-7rem)`) shifted meta's start per row.
         titleClassName="w-56"
+        // The name is the row's primary identifier: keep it above a usable
+        // floor and let the badge/action cluster shrink & wrap instead of
+        // letting the chips starve the name to zero at narrow widths (PAP-12988).
+        titlePriority
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
         className={cn(
@@ -335,30 +365,18 @@ export function Agents() {
         ) : (
           <AgentStatusCapsule status={agent.status} />
         )}
+        secondaryRow={
+          builtInCluster ? (
+            <div className="xl:hidden flex flex-wrap items-center gap-1.5">
+              {builtInCluster}
+            </div>
+          ) : undefined
+        }
         meta={
           <div className="flex items-center gap-3">
-            {builtInState && (
-              <div className="flex items-center gap-1.5">
-                {/* Provenance sits immediately after the name, then the
-                    lifecycle chip; the real agent status stays in `trailing`. */}
-                <BuiltInAgentBadge />
-                <BuiltInLifecycleChip status={builtInState.status} />
-                {builtInState.status === "needs_setup" && (
-                  <span
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                    }}
-                  >
-                    <Button
-                      size="xs"
-                      variant="outline"
-                      onClick={() => setConfigureState(builtInState)}
-                    >
-                      Set up
-                    </Button>
-                  </span>
-                )}
+            {builtInCluster && (
+              <div className="hidden xl:flex items-center gap-1.5">
+                {builtInCluster}
               </div>
             )}
             <div className="hidden xl:flex items-center gap-3">
@@ -630,8 +648,11 @@ function OrgTreeNode({
         ) : (
           <AgentStatusCapsule status={node.status} />
         )}
-        <div className="flex-1 min-w-(--sz-7rem) flex items-center gap-2">
-          <div className="min-w-0">
+        <div className="flex-1 min-w-0 flex flex-wrap items-center gap-2">
+          {/* Name floor + `truncate` keeps the primary identifier readable; the
+              cluster wraps to a second line under pressure instead of starving
+              the name at narrow widths (PAP-12988). */}
+          <div className="min-w-[7rem] truncate">
             <span className="text-sm font-medium">{node.name}</span>
             <span className="text-xs text-muted-foreground ml-2">
               {roleLabels[node.role] ?? node.role}
