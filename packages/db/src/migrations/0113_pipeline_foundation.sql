@@ -377,7 +377,7 @@ UPDATE "pipeline_stages"
 SET "key" = "id"::text
 WHERE "key" IS NULL;--> statement-breakpoint
 ALTER TABLE "pipeline_stages" ALTER COLUMN "key" SET NOT NULL;--> statement-breakpoint
-ALTER TABLE "pipeline_stages" ADD COLUMN IF NOT EXISTS "position" integer DEFAULT 0;--> statement-breakpoint
+ALTER TABLE "pipeline_stages" ADD COLUMN IF NOT EXISTS "position" integer;--> statement-breakpoint
 WITH existing_stage_positions AS (
   SELECT "pipeline_id", max("position") AS "max_position"
   FROM "pipeline_stages"
@@ -400,6 +400,7 @@ UPDATE "pipeline_stages"
 SET "position" = ranked_null_positions."next_position"
 FROM ranked_null_positions
 WHERE "pipeline_stages"."id" = ranked_null_positions."id";--> statement-breakpoint
+ALTER TABLE "pipeline_stages" ALTER COLUMN "position" SET DEFAULT 0;--> statement-breakpoint
 ALTER TABLE "pipeline_stages" ALTER COLUMN "position" SET NOT NULL;--> statement-breakpoint
 DO $$ BEGIN
  ALTER TABLE "pipeline_automation_executions" ADD CONSTRAINT "pipeline_automation_executions_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;
