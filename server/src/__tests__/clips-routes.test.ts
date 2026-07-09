@@ -265,7 +265,7 @@ describe("clip routes", () => {
     );
   });
 
-  it("rejects owner moderation, publish-status, and public-visibility patches", async () => {
+  it("rejects owner moderation, publish-status, public-visibility, and approved-revision patches", async () => {
     const clipId = "33333333-3333-4333-8333-333333333333";
     const sourceCompanyId = "22222222-2222-4222-8222-222222222222";
     mockClipService.getClipById.mockResolvedValue({
@@ -284,10 +284,14 @@ describe("clip routes", () => {
     const visibilityRes = await request(createApp())
       .patch("/api/clips/" + clipId)
       .send({ visibility: "public" });
+    const approvedRevisionRes = await request(createApp())
+      .patch("/api/clips/" + clipId)
+      .send({ latestApprovedRevisionId: "44444444-4444-4444-8444-444444444444" });
 
     expect(moderationRes.status).toBe(403);
     expect(publishRes.status).toBe(403);
     expect(visibilityRes.status).toBe(403);
+    expect(approvedRevisionRes.status).toBe(403);
     expect(mockClipService.updateClip).not.toHaveBeenCalled();
   });
 

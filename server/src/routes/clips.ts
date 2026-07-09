@@ -649,6 +649,9 @@ export function clipRoutes(db: Db, storage?: StorageService) {
     if (req.body.moderationState !== undefined || req.body.moderationReason !== undefined) {
       throw forbidden("Clip moderation fields require platform moderation access");
     }
+    if (req.body.latestApprovedRevisionId !== undefined) {
+      throw forbidden("Approved revision promotion requires platform moderation access");
+    }
     if (req.body.status === "published" && clip.status !== "published") {
       throw forbidden("Publishing clips requires platform moderation access");
     }

@@ -235,7 +235,7 @@ export function clipService(db: Db) {
     const row = await getPublicClipBySlug(slug);
     if (!row) return null;
     const revision = await getRevisionByNumber(row.clip.id, revisionNumber);
-    if (!revision || !isPubliclyReadableRevision(revision)) return null;
+    if (!revision || revision.id !== row.clip.latestApprovedRevisionId || !isPubliclyReadableRevision(revision)) return null;
     const dependencies = await db.select().from(clipDependencies).where(eq(clipDependencies.revisionId, revision.id));
     return serializePublicClip({
       clip: row.clip,
@@ -404,7 +404,7 @@ export function clipService(db: Db) {
         .update(clips)
         .set({
           currentRevisionId: revision.id,
-          latestApprovedRevisionId: clip.status === "published" && clip.moderationState !== "blocked" ? revision.id : clip.latestApprovedRevisionId,
+          latestApprovedRevisionId: clip.latestApprovedRevisionId,
           updatedAt: new Date(),
         })
         .where(eq(clips.id, clip.id))

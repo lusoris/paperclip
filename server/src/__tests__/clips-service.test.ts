@@ -197,7 +197,7 @@ describeEmbeddedPostgres("clipService", () => {
     expect(rows).toHaveLength(0);
   });
 
-  it("stores revisions append-only and serves exact revision manifests", async () => {
+  it("stores revisions append-only while keeping public reads on the last approved revision", async () => {
     const companyId = await seedCompany();
     const { clip, revision } = await publishFixture(companyId);
 
@@ -211,9 +211,13 @@ describeEmbeddedPostgres("clipService", () => {
     expect(update.revision.revisionNumber).toBe(2);
     const firstRevision = await svc.getPublicRevision(clip.slug, 1);
     const secondRevision = await svc.getPublicDetail(clip.slug);
+    const unapprovedRevision = await svc.getPublicRevision(clip.slug, update.revision.revisionNumber);
 
+    expect(update.clip.currentRevisionId).toBe(update.revision.id);
+    expect(update.clip.latestApprovedRevisionId).toBe(revision.id);
     expect(firstRevision?.currentRevision?.manifestChecksum).toBe("sha256:manifest-v1");
-    expect(secondRevision?.currentRevision?.manifestChecksum).toBe("sha256:manifest-v2");
+    expect(secondRevision?.currentRevision?.manifestChecksum).toBe("sha256:manifest-v1");
+    expect(unapprovedRevision).toBeNull();
     await expect(
       db.update(clipRevisions).set({ changeSummary: "mutated" }).where(eq(clipRevisions.id, revision.id)),
     ).rejects.toThrow(/Failed query/);
