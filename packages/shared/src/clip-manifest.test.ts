@@ -292,6 +292,10 @@ describe("clip manifest foundation", () => {
     expect(first.dependencies.adapters.map((entry) => entry.type)).toEqual(["claude_local", "codex_local"]);
     expect(first.dependencies.skills.map((entry) => entry.key)).toEqual(["triage"]);
     expect(first.dependencies.secrets.map((entry) => entry.key)).toContain("GH_TOKEN");
+    expect(first.dependencies.secrets.find((entry) => entry.key === "GH_TOKEN")).toMatchObject({
+      requirement: "required",
+      sourceRefs: ["agents.support", "envInputs.0"],
+    });
     expect(first.dependencies.permissions.map((entry) => entry.capability)).toContain("github.issues.write");
     expect(first.dependencies.runtime).toMatchObject({
       browser: true,

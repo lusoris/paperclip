@@ -232,6 +232,25 @@ describe("clip routes", () => {
     expect(mockCompanyPortabilityService.previewExport).not.toHaveBeenCalled();
   });
 
+  it("rejects malformed clipId path params before clip database lookups", async () => {
+    const revisionRes = await request(createApp())
+      .post("/api/clips/not-a-uuid/revisions")
+      .send({
+        manifestChecksum: "sha256:manifest-v2",
+        artifactChecksum: "sha256:artifact-v2",
+        manifestPayload: { schema: "paperclip.clip/v1" },
+      });
+    const patchRes = await request(createApp())
+      .patch("/api/clips/not-a-uuid")
+      .send({ title: "Updated title" });
+
+    expect(revisionRes.status).toBe(400);
+    expect(revisionRes.body).toEqual({ error: "Invalid clipId path parameter." });
+    expect(patchRes.status).toBe(400);
+    expect(patchRes.body).toEqual({ error: "Invalid clipId path parameter." });
+    expect(mockClipService.getClipById).not.toHaveBeenCalled();
+  });
+
   it("strips owner-supplied trust states when creating revisions", async () => {
     const clipId = "33333333-3333-4333-8333-333333333333";
     const sourceCompanyId = "22222222-2222-4222-8222-222222222222";

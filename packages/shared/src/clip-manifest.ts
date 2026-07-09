@@ -894,6 +894,11 @@ function addMapEntry<T extends { sourceRefs: Set<string> }>(map: Map<string, T>,
     map.set(key, value);
     return;
   }
+  const existingRequirement = existing as T & { requirement?: "required" | "optional" };
+  const nextRequirement = (value as T & { requirement?: "required" | "optional" }).requirement;
+  if (existingRequirement.requirement === "optional" && nextRequirement === "required") {
+    existingRequirement.requirement = "required";
+  }
   for (const sourceRef of value.sourceRefs) {
     existing.sourceRefs.add(sourceRef);
   }

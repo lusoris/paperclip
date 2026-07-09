@@ -75,6 +75,14 @@ function getClipCompanyIdParam(req: Request) {
   return companyId;
 }
 
+function getClipIdParam(req: Request) {
+  const clipId = req.params.clipId as string;
+  if (!isUuidLike(clipId)) {
+    throw badRequest("Invalid clipId path parameter.");
+  }
+  return clipId;
+}
+
 function evictExpiredClipRateLimitHits(cutoff: number, now: number) {
   if (now - clipRateLimitLastEvictionAt < CLIP_RATE_LIMIT_EVICTION_INTERVAL_MS) return;
   clipRateLimitLastEvictionAt = now;
@@ -607,7 +615,8 @@ export function clipRoutes(db: Db, storage?: StorageService) {
   });
 
   router.post("/clips/:clipId/revisions", validate(createClipRevisionSchema), async (req, res) => {
-    const clip = await svc.getClipById(req.params.clipId as string);
+    const clipId = getClipIdParam(req);
+    const clip = await svc.getClipById(clipId);
     if (!clip) {
       res.status(404).json({ error: "Clip not found" });
       return;
@@ -640,7 +649,8 @@ export function clipRoutes(db: Db, storage?: StorageService) {
   });
 
   router.patch("/clips/:clipId", validate(updateClipSchema), async (req, res) => {
-    const clip = await svc.getClipById(req.params.clipId as string);
+    const clipId = getClipIdParam(req);
+    const clip = await svc.getClipById(clipId);
     if (!clip) {
       res.status(404).json({ error: "Clip not found" });
       return;
