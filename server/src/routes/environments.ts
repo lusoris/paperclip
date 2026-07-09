@@ -44,11 +44,14 @@ import { listReadyPluginEnvironmentDrivers } from "../services/plugin-environmen
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
-import { environmentService } from "../services/environments.js";
+import {
+  ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES,
+  environmentService,
+} from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 
 const ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES_FOR_DELETE: ReadonlySet<string> =
-  new Set(["starting", "waiting_for_user", "capturing"]);
+  new Set(ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES);
 
 export function environmentRoutes(
   db: Db,

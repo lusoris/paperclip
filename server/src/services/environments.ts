@@ -44,7 +44,7 @@ const DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION =
 const KUBERNETES_PROVIDER_KEY = "kubernetes";
 /** Metadata marker for the company's managed-by-config Kubernetes sandbox environment. */
 const KUBERNETES_MANAGED_MARKER = "managedKubernetesSandbox";
-const ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES = ["starting", "waiting_for_user", "capturing"] as const;
+export const ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES = ["starting", "waiting_for_user", "capturing"] as const;
 
 /**
  * Configuration accepted by `ensureKubernetesEnvironment`. Mirrors the keys of

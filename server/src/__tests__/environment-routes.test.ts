@@ -100,6 +100,7 @@ vi.mock("../services/secrets.js", () => ({
 }));
 
 vi.mock("../services/environments.js", () => ({
+  ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES: ["starting", "waiting_for_user", "capturing"],
   environmentService: () => mockEnvironmentService,
 }));
 
