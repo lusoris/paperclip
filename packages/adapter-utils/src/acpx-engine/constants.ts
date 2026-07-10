@@ -5,6 +5,11 @@ export const DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS = "deny";
 export const DEFAULT_ACP_ENGINE_TIMEOUT_SEC = 0;
 export const DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS = 0;
 
+// The ACP server rejected a session/set_config_option value (for example a
+// manual model id its validation list does not include). Adapters with a
+// non-ACP lane can treat this as recoverable and retry there.
+export const ACPX_SESSION_CONFIG_FAILED_ERROR_CODE = "acpx_session_config_failed";
+
 export const ACPX_ADAPTER_AGENT_IDS = {
   claude_local: "claude",
   codex_local: "codex",

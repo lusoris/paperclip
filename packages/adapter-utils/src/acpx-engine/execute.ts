@@ -54,6 +54,7 @@ import {
   type AcpRuntimeTurnResult,
 } from "acpx/runtime";
 import {
+  ACPX_SESSION_CONFIG_FAILED_ERROR_CODE,
   DEFAULT_ACP_ENGINE_AGENT,
   DEFAULT_ACP_ENGINE_MODE,
   DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS,
@@ -1442,7 +1443,7 @@ function classifyError(
     if (acpCode === "ACP_BACKEND_MISSING") return "acpx_backend_missing";
     if (acpCode === "ACP_BACKEND_UNAVAILABLE") return "acpx_backend_unavailable";
     if (phase === "ensure_session") return "acpx_session_init_failed";
-    if (phase === "configure_session") return "acpx_session_config_failed";
+    if (phase === "configure_session") return ACPX_SESSION_CONFIG_FAILED_ERROR_CODE;
     if (phase === "turn") return "acpx_turn_failed";
     return null;
   })();

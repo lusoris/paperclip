@@ -158,4 +158,75 @@ describe("codex_local ACP startup fallback", () => {
 
     expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
   });
+
+  it("falls back to Codex CLI when auto-selected ACP rejects session configuration", async () => {
+    executeCodexAcp.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage:
+        'Agent rejected session/set_config_option for "model"="gpt-5.5-pro": Invalid params (ACP -32602).',
+      errorCode: "acpx_session_config_failed",
+      provider: "acpx",
+      model: "gpt-5.5-pro",
+      resultJson: { phase: "configure_session" },
+      summary: "config rejected",
+    } as never);
+    const ctx = buildContext({ model: "gpt-5.5-pro" });
+
+    const result = await execute(ctx as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("hello");
+    expect(executeCodexAcp).toHaveBeenCalledTimes(1);
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    expect(ctx.onLog).toHaveBeenCalledWith(
+      "stderr",
+      expect.stringContaining("Codex ACP rejected session configuration"),
+    );
+    expect(ctx.onLog).toHaveBeenCalledWith(
+      "stderr",
+      expect.stringContaining("gpt-5.5-pro"),
+    );
+  });
+
+  it("returns the session-config failure unchanged when engine=acp is explicit", async () => {
+    const failed = {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "Agent rejected session/set_config_option",
+      errorCode: "acpx_session_config_failed",
+      provider: "acpx",
+      resultJson: { phase: "configure_session" },
+      summary: "config rejected",
+    };
+    executeCodexAcp.mockResolvedValueOnce(failed as never);
+    const ctx = buildContext({ engine: "acp" });
+
+    const result = await execute(ctx as never);
+
+    expect(result).toBe(failed);
+    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back for other failed ACP results", async () => {
+    const failed = {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "turn failed",
+      errorCode: "acpx_turn_failed",
+      provider: "acpx",
+      resultJson: { phase: "turn" },
+      summary: "turn failed",
+    };
+    executeCodexAcp.mockResolvedValueOnce(failed as never);
+    const ctx = buildContext();
+
+    const result = await execute(ctx as never);
+
+    expect(result).toBe(failed);
+    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+  });
 });
