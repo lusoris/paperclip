@@ -3,6 +3,9 @@ import type { AttentionFeed, AttentionItem, AttentionSourceKind } from "@papercl
 import {
   attentionBadgeCount,
   attentionDateBucket,
+  attentionDetailLine,
+  attentionTone,
+  attentionToneStyle,
   buildAttentionFilterOptions,
   countActiveAttentionFilters,
   defaultAttentionFilterState,
@@ -10,6 +13,7 @@ import {
   groupAttentionItems,
   isInlineResolvable,
   NO_GROUP_SENTINEL,
+  severityBadge,
   severityStyle,
   sortAttentionItems,
   sourceMeta,
@@ -104,6 +108,103 @@ describe("sourceMeta + severityStyle", () => {
 
   it("maps escalation severity to distinct accents", () => {
     expect(severityStyle("critical").accent).not.toBe(severityStyle("low").accent);
+  });
+});
+
+describe("attentionTone + attentionToneStyle (canonical color map §4)", () => {
+  it("colors plan approvals violet regardless of source kind", () => {
+    const fromApproval = buildItem({
+      sourceKind: "approval",
+      detail: { kind: "plan_approval", issueTitle: "I", planTitle: "P", summaryExcerpt: null, images: [] },
+    });
+    const fromInteraction = buildItem({
+      sourceKind: "issue_thread_interaction",
+      detail: { kind: "plan_approval", issueTitle: "I", planTitle: "P", summaryExcerpt: null, images: [] },
+    });
+    expect(attentionTone(fromApproval)).toBe("violet");
+    expect(attentionTone(fromInteraction)).toBe("violet");
+    expect(attentionToneStyle(fromApproval).accent).toContain("violet");
+  });
+
+  it("colors confirmations / questions / verdicts in the sky family", () => {
+    expect(attentionTone(buildItem({ sourceKind: "approval" }))).toBe("sky");
+    expect(attentionTone(buildItem({ sourceKind: "issue_thread_interaction" }))).toBe("sky");
+    expect(
+      attentionTone(
+        buildItem({
+          sourceKind: "issue_thread_interaction",
+          detail: { kind: "questions", questionCount: 2, firstQuestionText: "?", images: [] },
+        }),
+      ),
+    ).toBe("sky");
+  });
+
+  it("colors failures rose and blocked/recovery/budget amber", () => {
+    expect(attentionTone(buildItem({ sourceKind: "failed_run" }))).toBe("rose");
+    expect(attentionTone(buildItem({ sourceKind: "agent_error_alert" }))).toBe("rose");
+    expect(attentionTone(buildItem({ sourceKind: "blocker_attention" }))).toBe("amber");
+    expect(attentionTone(buildItem({ sourceKind: "recovery_action" }))).toBe("amber");
+    expect(attentionTone(buildItem({ sourceKind: "budget_alert" }))).toBe("amber");
+  });
+
+  it("colors join requests neutral", () => {
+    expect(attentionTone(buildItem({ sourceKind: "join_request" }))).toBe("neutral");
+  });
+
+  it("gives every tone a distinct accent and never keys color off severity", () => {
+    const rose = buildItem({ sourceKind: "failed_run", severity: "low" });
+    const amber = buildItem({ sourceKind: "budget_alert", severity: "critical" });
+    // Same-source rows with opposite severities share one accent (color ≠ severity).
+    expect(attentionToneStyle(buildItem({ sourceKind: "failed_run", severity: "critical" })).accent).toBe(
+      attentionToneStyle(rose).accent,
+    );
+    expect(attentionToneStyle(rose).accent).not.toBe(attentionToneStyle(amber).accent);
+  });
+});
+
+describe("severityBadge", () => {
+  it("only surfaces a badge for Critical/High", () => {
+    expect(severityBadge("critical")?.label).toBe("Critical");
+    expect(severityBadge("high")?.label).toBe("High");
+    expect(severityBadge("medium")).toBeNull();
+    expect(severityBadge("low")).toBeNull();
+  });
+});
+
+describe("attentionDetailLine (§7)", () => {
+  it("summarizes questions with a count and the first question", () => {
+    const line = attentionDetailLine(
+      buildItem({
+        detail: { kind: "questions", questionCount: 2, firstQuestionText: "Which auth provider?", images: [] },
+      }),
+    );
+    expect(line).toContain("2 questions");
+    expect(line).toContain("Which auth provider?");
+  });
+
+  it("singularizes a single suggested task", () => {
+    const line = attentionDetailLine(
+      buildItem({
+        detail: { kind: "suggested_tasks", taskCount: 1, firstTaskTitle: "Add index", images: [] },
+      }),
+    );
+    expect(line).toContain("1 suggested task");
+    expect(line).not.toContain("tasks");
+  });
+
+  it("renders a failed run as agent — reason", () => {
+    const line = attentionDetailLine(
+      buildItem({
+        sourceKind: "failed_run",
+        detail: { kind: "failed_run", agentName: "Deployer", failureReasonExcerpt: "exit code 1", images: [] },
+      }),
+    );
+    expect(line).toContain("Deployer");
+    expect(line).toContain("exit code 1");
+  });
+
+  it("returns null when there is no detail block", () => {
+    expect(attentionDetailLine(buildItem({ detail: null }))).toBeNull();
   });
 });
 

@@ -148,4 +148,71 @@ describe("AttentionQueueRow", () => {
     const trigger = container?.querySelector('[aria-label="Row actions"]');
     expect(trigger).toBeTruthy();
   });
+
+  it("toggles expand when the collapsed header of an inline row is clicked", () => {
+    const onToggleExpand = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem()}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+    const header = container?.querySelector('[role="button"][aria-expanded]');
+    expect(header).toBeTruthy();
+    expect(header?.getAttribute("aria-expanded")).toBe("false");
+    act(() => {
+      header?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onToggleExpand).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not navigate on title click — the title is plain text, not a link", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem()}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+    const links = Array.from(container?.querySelectorAll("a") ?? []);
+    // No anchor should carry the subject title (only the identifier link, absent here).
+    expect(links.some((a) => a.textContent?.includes("Hire agent: Research Analyst"))).toBe(false);
+  });
+
+  it("renders inline decision verbs on a collapsed inline row", () => {
+    const el = render(
+      <AttentionQueueRow
+        item={buildItem({
+          decisionVerbs: [
+            { id: "approve", label: "Approve", description: null },
+            { id: "reject", label: "Reject", description: null },
+          ],
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+    expect(el.textContent).toContain("Approve");
+    expect(el.textContent).toContain("Reject");
+  });
+
+  it("does not expose a toggle button for non-inline rows", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({ sourceKind: "failed_run" as AttentionSourceKind, inlineResolvable: false })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+    expect(container?.querySelector('[role="button"][aria-expanded]')).toBeNull();
+  });
 });

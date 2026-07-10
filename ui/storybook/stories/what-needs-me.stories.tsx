@@ -79,6 +79,19 @@ function item(
   };
 }
 
+/** A visible colored tile as a data URI so thumbnails render in static screenshots. */
+function thumb(hex: string, label: string): string {
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='88' height='88'><rect width='88' height='88' fill='${hex}'/><text x='44' y='50' font-family='sans-serif' font-size='13' fill='white' text-anchor='middle'>${label}</text></svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+const IMAGES = [
+  { assetId: thumb("#0ea5e9", "1"), alt: "screenshot 1" },
+  { assetId: thumb("#8b5cf6", "2"), alt: "screenshot 2" },
+  { assetId: thumb("#f43f5e", "3"), alt: "screenshot 3" },
+  { assetId: thumb("#f59e0b", "4"), alt: "screenshot 4" },
+];
+
 const POPULATED: AttentionItem[] = [
   item(
     "recov-1",
@@ -177,11 +190,92 @@ const PROJECTS: Record<string, AttentionItem["project"]> = {
   "intx-1": { id: "proj-alpha", name: "Alpha", urlKey: "alpha" },
   "review-1": { id: "proj-beta", name: "Beta", urlKey: "beta" },
 };
+const DETAILS: Record<string, AttentionItem["detail"]> = {
+  "recov-1": { kind: "generic", summaryExcerpt: "Agent has not produced output in 40 minutes.", images: [] },
+  "appr-1": { kind: "approval", approvalType: "hire_agent", summaryExcerpt: "Adds a Research Analyst to the Growth pod.", images: [] },
+  "intx-1": {
+    kind: "questions",
+    questionCount: 2,
+    firstQuestionText: "Which auth provider should we standardize on?",
+    images: [IMAGES[0], IMAGES[1]],
+  },
+  "review-1": { kind: "generic", summaryExcerpt: "3 files changed · +212 / −41", images: [IMAGES[0], IMAGES[1], IMAGES[2], IMAGES[3]] },
+  "fail-1": { kind: "failed_run", agentName: "Deployer", failureReasonExcerpt: "exit code 1 running migrate", images: [] },
+  "budget-1": { kind: "budget", observedPercent: 85, amountObserved: 425, amountLimit: 500, images: [] },
+};
+
 const POPULATED_DATED: AttentionItem[] = POPULATED.map((it) => ({
   ...it,
   activityAt: new Date(ACTIVITY_OFFSETS[it.id] ?? NOW).toISOString(),
   project: PROJECTS[it.id] ?? null,
+  detail: DETAILS[it.id] ?? it.detail,
 }));
+
+// A dedicated set exercising the §4 color map (a plan approval = violet next to a
+// sky confirmation), §7 detail lines, §8 project chips and §10 thumbnail stacks.
+const SHOWCASE: AttentionItem[] = [
+  {
+    ...item("plan-1", "issue_thread_interaction", "high", "Approve plan: Attention queue redesign", "A plan is awaiting your approval.", {
+      inlineResolvable: true,
+      subject: { kind: "interaction", id: "intx-plan", companyId, title: "Approve plan: Attention queue redesign", identifier: null, status: "pending", href: "/PAP/issues/PAP-1000#plan", metadata: { kind: "request_confirmation", issueId: "issue-1000" } },
+      decisionVerbs: [
+        { id: "approve", label: "Approve plan", description: null },
+        { id: "request_changes", label: "Request changes", description: null },
+      ],
+      project: { id: "proj-alpha", name: "Alpha", urlKey: "alpha" },
+    }),
+    activityAt: new Date(NOW - 20 * 60 * 1000).toISOString(),
+    detail: { kind: "plan_approval", issueTitle: "Attention home", planTitle: "Row/card redesign — 8 sections", summaryExcerpt: null, images: [IMAGES[1]] },
+  },
+  {
+    ...item("conf-1", "approval", "medium", "Confirm: publish release notes", "A confirmation is pending.", {
+      inlineResolvable: true,
+      subject: { kind: "approval", id: "appr-conf", companyId, title: "Confirm: publish release notes", identifier: null, status: "pending", href: "/PAP/approvals/appr-conf", metadata: {} },
+      relatedIssue: null,
+      decisionVerbs: [
+        { id: "approve", label: "Approve", description: null },
+        { id: "reject", label: "Reject", description: null },
+      ],
+      project: { id: "proj-beta", name: "Beta", urlKey: "beta" },
+    }),
+    activityAt: new Date(NOW - 40 * 60 * 1000).toISOString(),
+    detail: { kind: "confirmation", promptExcerpt: "Ship v2026.707.0 changelog to the public page?", isPlanTarget: false, images: [] },
+  },
+  {
+    ...item("qs-1", "issue_thread_interaction", "medium", "Answer 2 questions on rollout", "Questions need answers.", {
+      inlineResolvable: true,
+      subject: { kind: "interaction", id: "intx-qs", companyId, title: "Answer 2 questions on rollout", identifier: null, status: "pending", href: "/PAP/issues/PAP-1000#qs", metadata: { kind: "ask_user_questions", issueId: "issue-1000" } },
+      decisionVerbs: [{ id: "respond", label: "Answer", description: null }],
+      project: { id: "proj-alpha", name: "Alpha", urlKey: "alpha" },
+    }),
+    activityAt: new Date(NOW - 90 * 60 * 1000).toISOString(),
+    detail: { kind: "questions", questionCount: 2, firstQuestionText: "Which auth provider should we standardize on?", images: [IMAGES[0], IMAGES[2]] },
+  },
+  {
+    ...item("fail-2", "failed_run", "critical", "Deploy pipeline failed after 3 retries", "Retries exhausted.", {
+      inlineResolvable: false,
+      relatedIssue: null,
+    }),
+    activityAt: new Date(NOW - 3 * HOUR).toISOString(),
+    detail: { kind: "failed_run", agentName: "Deployer", failureReasonExcerpt: "exit code 1 running migrate", images: [IMAGES[3]] },
+  },
+  {
+    ...item("budg-2", "budget_alert", "low", "Company budget crossed 85%", "Budget threshold crossed.", {
+      inlineResolvable: false,
+      relatedIssue: null,
+    }),
+    activityAt: new Date(NOW - 5 * HOUR).toISOString(),
+    detail: { kind: "budget", observedPercent: 85, amountObserved: 425, amountLimit: 500, images: [] },
+  },
+  {
+    ...item("join-2", "join_request", "medium", "alex@acme.dev wants to join", "Join request pending.", {
+      inlineResolvable: true,
+      subject: { kind: "join_request", id: "join-2", companyId, title: "alex@acme.dev wants to join", identifier: null, status: "pending_approval", href: "/PAP/settings/access", metadata: {} },
+      relatedIssue: null,
+    }),
+    activityAt: new Date(NOW - 6 * HOUR).toISOString(),
+  },
+];
 
 const SNOOZED: AttentionItem[] = [
   {
@@ -283,6 +377,7 @@ function Queue({
                     onToggleExpand={() => setExpandedId((p) => (p === it.id ? null : it.id))}
                     onDismiss={(d) => setCleared((prev) => new Set(prev).add(d.id))}
                     onSnooze={(d) => setCleared((prev) => new Set(prev).add(d.id))}
+                    onFilterProject={() => {}}
                   />
                 ))}
               </div>
@@ -365,6 +460,10 @@ export const GroupedBySeverity: Story = {
 
 export const WithCurtains: Story = {
   args: { items: POPULATED_DATED.slice(0, 3), groupBy: "date", snoozed: SNOOZED, dismissed: DISMISSED, openCurtains: true },
+};
+
+export const TypeColorsAndDetail: Story = {
+  args: { items: SHOWCASE, groupBy: "type" },
 };
 
 export const ZeroState: Story = {

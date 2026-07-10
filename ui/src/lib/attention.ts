@@ -12,8 +12,10 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type {
+  AttentionDetailImage,
   AttentionFeed,
   AttentionItem,
+  AttentionItemDetail,
   AttentionProjectRef,
   AttentionSeverity,
   AttentionSourceKind,
@@ -74,6 +76,191 @@ const SEVERITY_STYLE: Record<AttentionSeverity, SeverityStyle> = {
 
 export function severityStyle(severity: AttentionSeverity): SeverityStyle {
   return SEVERITY_STYLE[severity] ?? SEVERITY_STYLE.low;
+}
+
+// ---------------------------------------------------------------------------
+// Canonical type → color map (PAP-13409 §4)
+//
+// The row color is driven by the *kind of decision*, never by severity — one
+// map, sourced from `IssueThreadInteractionCard`'s palette so a plan approval or
+// confirmation reads identically in the queue and on the issue thread:
+//   • confirmations / questions / suggested-tasks / verdicts / reviews → sky
+//   • plan approvals                                                   → violet
+//   • failures (failed run, agent error)                              → rose
+//   • blocked / recovery / budget                                     → amber
+//   • join request                                                    → neutral
+// Severity only ever surfaces as a small Critical/High badge (never the accent).
+// ---------------------------------------------------------------------------
+
+export type AttentionTone = "sky" | "violet" | "rose" | "amber" | "neutral";
+
+export interface AttentionToneStyle {
+  /** Left accent bar background. */
+  accent: string;
+  /** Source-icon tint. */
+  icon: string;
+  /** Chip / badge border+bg+text (matches the interaction card badge palette). */
+  chip: string;
+}
+
+const TONE_STYLE: Record<AttentionTone, AttentionToneStyle> = {
+  sky: {
+    accent: "bg-sky-500",
+    icon: "text-sky-600 dark:text-sky-400",
+    chip: "border-sky-500/60 bg-sky-500/10 text-sky-900 dark:bg-sky-500/15 dark:text-sky-100",
+  },
+  violet: {
+    accent: "bg-violet-500",
+    icon: "text-violet-600 dark:text-violet-400",
+    chip: "border-violet-500/60 bg-violet-500/10 text-violet-900 dark:bg-violet-500/15 dark:text-violet-100",
+  },
+  rose: {
+    accent: "bg-rose-500",
+    icon: "text-rose-600 dark:text-rose-400",
+    chip: "border-rose-500/60 bg-rose-500/10 text-rose-900 dark:bg-rose-500/15 dark:text-rose-100",
+  },
+  amber: {
+    accent: "bg-amber-500",
+    icon: "text-amber-600 dark:text-amber-400",
+    chip: "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
+  },
+  neutral: {
+    accent: "bg-muted-foreground/40",
+    icon: "text-muted-foreground",
+    chip: "border-border/70 bg-muted/50 text-muted-foreground",
+  },
+};
+
+/**
+ * Resolve the canonical tone for a row. A plan approval is violet regardless of
+ * which surface tagged it (approval flow *or* issue-thread confirmation), so we
+ * check the T1 detail discriminant first, then fall back to the source kind.
+ */
+export function attentionTone(item: AttentionItem): AttentionTone {
+  if (item.detail?.kind === "plan_approval") return "violet";
+  switch (item.sourceKind) {
+    case "failed_run":
+    case "agent_error_alert":
+      return "rose";
+    case "blocker_attention":
+    case "recovery_action":
+    case "budget_alert":
+      return "amber";
+    case "join_request":
+      return "neutral";
+    case "approval":
+    case "issue_thread_interaction":
+    case "review":
+    case "productivity_review":
+    default:
+      return "sky";
+  }
+}
+
+export function attentionToneStyle(item: AttentionItem): AttentionToneStyle {
+  return TONE_STYLE[attentionTone(item)];
+}
+
+/**
+ * Severity is demoted to a small badge — and only when it is genuinely
+ * escalated (Critical/High). Medium/Low return `null` so most rows carry no
+ * severity chrome at all.
+ */
+export function severityBadge(severity: AttentionSeverity): { label: string; className: string } | null {
+  if (severity === "critical") {
+    return { label: "Critical", className: "border-red-500/60 bg-red-500/10 text-red-700 dark:text-red-300" };
+  }
+  if (severity === "high") {
+    return { label: "High", className: "border-orange-500/60 bg-orange-500/10 text-orange-700 dark:text-orange-300" };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Richer detail line (PAP-13409 §7) — render T1's structured `detail` block into
+// a single secondary line under the title (the caller clamps it to 2 lines).
+// ---------------------------------------------------------------------------
+
+function quote(text: string | null | undefined): string | null {
+  const trimmed = text?.trim();
+  if (!trimmed) return null;
+  return `“${trimmed}”`;
+}
+
+function countNoun(count: number, singular: string): string {
+  return `${count} ${count === 1 ? singular : `${singular}s`}`;
+}
+
+/**
+ * A concise human-readable detail line for a row, e.g.
+ *   "2 questions — “Which auth provider…”"
+ *   "Deploy failed — “exit code 1 on migrate”".
+ * Returns `null` when the detail carries nothing beyond the title, so the row
+ * can fall back to `whyNow`.
+ */
+export function attentionDetailLine(item: AttentionItem): string | null {
+  const detail = item.detail;
+  if (!detail) return null;
+  switch (detail.kind) {
+    case "plan_approval":
+      return detail.planTitle?.trim() || quote(detail.summaryExcerpt);
+    case "approval":
+      return quote(detail.summaryExcerpt);
+    case "confirmation":
+      return quote(detail.promptExcerpt);
+    case "checkbox_confirmation": {
+      const q = quote(detail.promptExcerpt);
+      return q ? `${countNoun(detail.optionCount, "option")} — ${q}` : countNoun(detail.optionCount, "option");
+    }
+    case "questions": {
+      const q = quote(detail.firstQuestionText);
+      const label = countNoun(detail.questionCount, "question");
+      return q ? `${label} — ${q}` : label;
+    }
+    case "suggested_tasks": {
+      const q = quote(detail.firstTaskTitle);
+      const label = countNoun(detail.taskCount, "suggested task");
+      return q ? `${label} — ${q}` : label;
+    }
+    case "item_verdicts": {
+      const q = quote(detail.promptExcerpt);
+      const label = `${countNoun(detail.itemCount, "item")} to verdict`;
+      return q ? `${label} — ${q}` : label;
+    }
+    case "failed_run":
+    case "agent_error": {
+      const reason = quote(detail.failureReasonExcerpt);
+      if (detail.agentName && reason) return `${detail.agentName} — ${reason}`;
+      return detail.agentName ?? reason;
+    }
+    case "blocker": {
+      const b = detail.blockingIssue;
+      if (!b) return null;
+      const id = b.identifier ? `${b.identifier} ` : "";
+      return b.title ? `Blocked by ${id}${b.title}` : b.identifier ? `Blocked by ${b.identifier}` : null;
+    }
+    case "budget":
+      return `${Math.round(detail.observedPercent)}% of budget used ($${detail.amountObserved} / $${detail.amountLimit})`;
+    case "generic":
+      return quote(detail.summaryExcerpt);
+    default:
+      return null;
+  }
+}
+
+/** Screenshot / thumbnail images attached to the detail block, if any. */
+export function attentionDetailImages(item: AttentionItem): AttentionDetailImage[] {
+  return (item.detail as AttentionItemDetail | null)?.images ?? [];
+}
+
+/**
+ * Content URL for an attention detail image asset. Already-absolute or data
+ * URLs pass through unchanged (server may hand back a CDN URL; stories use data
+ * URIs), otherwise we resolve the in-app asset content route.
+ */
+export function attentionImageUrl(assetId: string): string {
+  if (assetId.startsWith("data:") || assetId.startsWith("http")) return assetId;
+  return `/api/assets/${assetId}/content`;
 }
 
 /**

@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpDown, Check, CheckCircle2, Inbox, Layers, ListFilter } from "lucide-react";
-import type { Agent, AttentionItem } from "@paperclipai/shared";
+import type { Agent, AttentionItem, AttentionProjectRef } from "@paperclipai/shared";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToastActions } from "../context/ToastContext";
 import { useInboxDismissals } from "../hooks/useInboxBadge";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -67,6 +68,7 @@ export function WhatNeedsMe() {
   const [pendingRestore, setPendingRestore] = useState<Set<string>>(() => new Set());
 
   const { dismiss, snooze, restore } = useInboxDismissals(selectedCompanyId);
+  const { pushToast } = useToastActions();
 
   useEffect(() => {
     setBreadcrumbs([{ label: "What needs me" }]);
@@ -183,10 +185,28 @@ export function WhatNeedsMe() {
     });
   };
 
+  const handleUndoDismiss = (item: AttentionItem) => {
+    setPendingHide((prev) => {
+      const next = new Set(prev);
+      next.delete(item.id);
+      return next;
+    });
+    restore(item.dismissalKey);
+  };
   const handleDismiss = (item: AttentionItem) => {
     setPendingHide((prev) => new Set(prev).add(item.id));
     dismiss(item.dismissalKey);
     if (expandedId === item.id) setExpandedId(null);
+    // ~8s undo window; restores the row in place via T1's DELETE endpoint.
+    pushToast({
+      id: `attention-dismiss-${item.id}`,
+      dedupeKey: `attention-dismiss-${item.dismissalKey}`,
+      title: "Dismissed",
+      body: item.subject.title ?? undefined,
+      tone: "info",
+      ttlMs: 8000,
+      action: { label: "Undo", onClick: () => handleUndoDismiss(item) },
+    });
   };
   const handleSnooze = (item: AttentionItem, snoozedUntil: string) => {
     setPendingHide((prev) => new Set(prev).add(item.id));
@@ -196,6 +216,10 @@ export function WhatNeedsMe() {
   const handleRestore = (item: AttentionItem) => {
     setPendingRestore((prev) => new Set(prev).add(item.id));
     restore(item.dismissalKey);
+  };
+  const handleFilterProject = (project: AttentionProjectRef) => {
+    if (filters.projectIds.includes(project.id)) return;
+    updateFilters({ ...filters, projectIds: [...filters.projectIds, project.id] });
   };
 
   const activeFilterCount = countActiveAttentionFilters(filters);
@@ -344,6 +368,7 @@ export function WhatNeedsMe() {
                           onToggleExpand={() => setExpandedId((prev) => (prev === item.id ? null : item.id))}
                           onDismiss={handleDismiss}
                           onSnooze={handleSnooze}
+                          onFilterProject={handleFilterProject}
                           agentMap={agentMap}
                           currentUserId={currentUserId}
                         />
