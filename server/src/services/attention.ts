@@ -368,13 +368,33 @@ function interactionLabel(kind: string) {
   }
 }
 
-function interactionVerbs(kind: string) {
+function interactionVerbs(kind: string, payload: Record<string, unknown>) {
   if (kind === "ask_user_questions") {
     return decisionVerbs({
       id: "respond",
       label: "Respond",
       description: "Submit answers to the pending questions.",
     });
+  }
+  if (kind === "request_confirmation") {
+    const acceptLabel = typeof payload.acceptLabel === "string" && payload.acceptLabel.trim()
+      ? payload.acceptLabel.trim()
+      : "Confirm";
+    const rejectLabel = typeof payload.rejectLabel === "string" && payload.rejectLabel.trim()
+      ? payload.rejectLabel.trim()
+      : "Decline";
+    return decisionVerbs(
+      {
+        id: "accept",
+        label: acceptLabel,
+        description: "Accept the pending confirmation.",
+      },
+      {
+        id: "reject",
+        label: rejectLabel,
+        description: "Decline the pending confirmation.",
+      },
+    );
   }
   return decisionVerbs(
     {
@@ -680,7 +700,7 @@ export function attentionService(db: Db) {
             },
           },
           whyNow: `${interactionLabel(interaction.kind)} on an issue thread.`,
-          decisionVerbs: interactionVerbs(interaction.kind),
+          decisionVerbs: interactionVerbs(interaction.kind, payload),
           inlineResolvable: true,
           entryRule: "issue_thread_interactions.status = 'pending'",
           exitRule: "Interaction resolves, expires, fails, or is cancelled.",

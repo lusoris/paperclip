@@ -14,6 +14,7 @@ import type { Agent, AttentionDetailImage, AttentionItem } from "@paperclipai/sh
 import { Link } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { approvalsApi } from "../api/approvals";
+import { issuesApi } from "../api/issues";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -255,7 +256,7 @@ export function AttentionQueueRow({
           </div>
 
           <div className="mt-auto flex flex-col items-end gap-1" data-attention-actions="true">
-            {!expanded && <CompactDecisionActions item={item} companyId={companyId} />}
+            {!expanded && <CompactDecisionActions item={item} companyId={companyId} onOpen={onToggleExpand} />}
 
             <div className="flex items-start justify-end gap-1">
               {!inline && href && (
@@ -293,7 +294,7 @@ export function AttentionQueueRow({
   );
 }
 
-type CompactDecisionAction = "approve" | "reject" | "request_revision";
+type CompactDecisionAction = "accept" | "approve" | "reject" | "request_revision";
 
 function compactDecisionAction(item: AttentionItem, verbId: string): CompactDecisionAction | null {
   if (item.sourceKind === "approval" && (verbId === "approve" || verbId === "reject" || verbId === "request_revision")) {
@@ -302,10 +303,25 @@ function compactDecisionAction(item: AttentionItem, verbId: string): CompactDeci
   if (item.sourceKind === "join_request" && (verbId === "approve" || verbId === "reject")) {
     return verbId;
   }
+  if (
+    item.sourceKind === "issue_thread_interaction"
+    && item.subject.metadata?.kind === "request_confirmation"
+    && (verbId === "accept" || verbId === "reject")
+  ) {
+    return verbId;
+  }
   return null;
 }
 
-function CompactDecisionActions({ item, companyId }: { item: AttentionItem; companyId: string }) {
+function CompactDecisionActions({
+  item,
+  companyId,
+  onOpen,
+}: {
+  item: AttentionItem;
+  companyId: string;
+  onOpen: () => void;
+}) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const actions = item.decisionVerbs
@@ -327,6 +343,12 @@ function CompactDecisionActions({ item, companyId }: { item: AttentionItem; comp
           ? accessApi.approveJoinRequest(companyId, item.subject.id)
           : accessApi.rejectJoinRequest(companyId, item.subject.id);
       }
+      if (item.sourceKind === "issue_thread_interaction") {
+        const issueId = item.subject.metadata?.issueId;
+        if (typeof issueId !== "string") throw new Error("Missing issue reference for this decision.");
+        if (action === "accept") return issuesApi.acceptInteraction(issueId, item.subject.id);
+        return issuesApi.rejectInteraction(issueId, item.subject.id);
+      }
       throw new Error("This decision must be completed from its detail view.");
     },
     onSuccess: (_result, action) => {
@@ -337,7 +359,7 @@ function CompactDecisionActions({ item, companyId }: { item: AttentionItem; comp
         queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(companyId) });
       }
       pushToast({
-        title: item.sourceKind === "approval" ? `Approval ${decisionLabel(action)}` : `Join request ${decisionLabel(action)}`,
+        title: compactDecisionSuccessLabel(item.sourceKind, action),
         tone: "success",
       });
     },
@@ -363,6 +385,10 @@ function CompactDecisionActions({ item, companyId }: { item: AttentionItem; comp
           disabled={decision.isPending}
           onClick={(event) => {
             event.stopPropagation();
+            if (item.sourceKind === "issue_thread_interaction" && action === "reject") {
+              onOpen();
+              return;
+            }
             decision.mutate(action);
           }}
         >
@@ -376,11 +402,18 @@ function CompactDecisionActions({ item, companyId }: { item: AttentionItem; comp
 
 function decisionLabel(action: CompactDecisionAction): string {
   if (action === "request_revision") return "sent for revision";
-  return action === "approve" ? "approved" : "rejected";
+  if (action === "accept" || action === "approve") return "approved";
+  return "rejected";
+}
+
+function compactDecisionSuccessLabel(sourceKind: AttentionItem["sourceKind"], action: CompactDecisionAction): string {
+  if (sourceKind === "approval") return `Approval ${decisionLabel(action)}`;
+  if (sourceKind === "join_request") return `Join request ${decisionLabel(action)}`;
+  return action === "accept" ? "Confirmation accepted" : "Confirmation declined";
 }
 
 function decisionVerbVariant(verb: AttentionItem["decisionVerbs"][number]): "default" | "outline" | "destructive" {
-  const text = `${verb.id} ${verb.label}`.toLowerCase();
+  const text = `${verb.label} ${verb.description ?? ""}`.toLowerCase();
   if (/\b(reject|decline|deny|delete|remove)\b/.test(text)) return "destructive";
   if (/\b(accept|approve|confirm|apply)\b/.test(text)) return "default";
   return "outline";

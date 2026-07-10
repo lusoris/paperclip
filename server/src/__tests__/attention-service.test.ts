@@ -687,7 +687,13 @@ describeEmbeddedPostgres("attention service", () => {
         status: "pending",
         continuationPolicy: "wake_assignee",
         title: "Approve the plan",
-        payload: { version: 1, prompt: "Approve plan?", target: { type: "issue_document", issueId, key: "plan", revisionId: planRevisionId } },
+        payload: {
+          version: 1,
+          prompt: "Approve plan?",
+          acceptLabel: "Approve plan",
+          rejectLabel: "Request changes",
+          target: { type: "issue_document", issueId, key: "plan", revisionId: planRevisionId },
+        },
         createdAt: new Date("2026-07-09T12:01:00.000Z"),
         updatedAt: new Date("2026-07-09T12:01:00.000Z"),
       },
@@ -754,6 +760,10 @@ describeEmbeddedPostgres("attention service", () => {
     const planItem = detailsByKind.get("plan_approval");
     expect(planItem?.subject.title).toBe("Plan approval - Approve launch plan");
     expect(planItem?.subject.metadata).toMatchObject({ isPlanTarget: true, targetDocumentKey: "plan" });
+    expect(planItem?.decisionVerbs).toEqual([
+      expect.objectContaining({ id: "accept", label: "Approve plan" }),
+      expect.objectContaining({ id: "reject", label: "Request changes" }),
+    ]);
     expect(planItem?.project).toMatchObject({
       id: projectId,
       name: "Attention Project",

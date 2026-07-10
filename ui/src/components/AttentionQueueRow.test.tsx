@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AttentionItem, AttentionSourceKind } from "@paperclipai/shared";
 import { approvalsApi } from "../api/approvals";
+import { issuesApi } from "../api/issues";
 import { ToastViewport } from "./ToastViewport";
 import { ToastProvider } from "../context/ToastContext";
 import { AttentionQueueRow } from "./AttentionQueueRow";
@@ -22,6 +23,13 @@ vi.mock("../api/approvals", () => ({
     approve: vi.fn(),
     reject: vi.fn(),
     requestRevision: vi.fn(),
+  },
+}));
+
+vi.mock("../api/issues", () => ({
+  issuesApi: {
+    acceptInteraction: vi.fn(),
+    rejectInteraction: vi.fn(),
   },
 }));
 
@@ -327,6 +335,85 @@ describe("AttentionQueueRow", () => {
     expect(approvalsApi.approve).toHaveBeenCalledWith("approval-1");
     expect(onToggleExpand).not.toHaveBeenCalled();
     expect(container?.textContent).toContain("Approval approved");
+  });
+
+  it("renders configured confirmation labels and accepts from the compact action area", async () => {
+    const onToggleExpand = vi.fn();
+    vi.mocked(issuesApi.acceptInteraction).mockResolvedValue({} as never);
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "issue_thread_interaction",
+          subject: {
+            kind: "interaction",
+            id: "interaction-1",
+            companyId: "c1",
+            title: "Plan approval",
+            identifier: null,
+            status: "pending",
+            href: "/PAP/issues/issue-1#interaction-interaction-1",
+            metadata: { kind: "request_confirmation", issueId: "issue-1" },
+          },
+          decisionVerbs: [
+            { id: "accept", label: "Approve plan", description: null },
+            { id: "reject", label: "Request changes", description: null },
+          ],
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+
+    const decisionActions = container?.querySelector('[aria-label="Decision actions"]');
+    expect(decisionActions?.textContent).toContain("Approve plan");
+    expect(decisionActions?.textContent).toContain("Request changes");
+    expect(Array.from(decisionActions?.querySelectorAll("button") ?? []).find((button) => button.textContent === "Approve plan")?.getAttribute("data-variant")).toBe("default");
+    expect(Array.from(decisionActions?.querySelectorAll("button") ?? []).find((button) => button.textContent === "Request changes")?.getAttribute("data-variant")).toBe("outline");
+
+    const approve = Array.from(decisionActions?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent === "Approve plan",
+    );
+    act(() => approve?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(issuesApi.acceptInteraction).toHaveBeenCalledWith("issue-1", "interaction-1");
+    expect(onToggleExpand).not.toHaveBeenCalled();
+  });
+
+  it("opens the matching confirmation form when requesting changes from a compact action", () => {
+    const onToggleExpand = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "issue_thread_interaction",
+          subject: {
+            kind: "interaction",
+            id: "interaction-1",
+            companyId: "c1",
+            title: "Plan approval",
+            identifier: null,
+            status: "pending",
+            href: "/PAP/issues/issue-1#interaction-interaction-1",
+            metadata: { kind: "request_confirmation", issueId: "issue-1" },
+          },
+          decisionVerbs: [{ id: "reject", label: "Request changes", description: null }],
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+
+    const requestChanges = Array.from(container?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent === "Request changes",
+    );
+    act(() => requestChanges?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    expect(onToggleExpand).toHaveBeenCalledOnce();
+    expect(issuesApi.rejectInteraction).not.toHaveBeenCalled();
   });
 
   it("centers thumbnails beside the full card text stack", () => {
