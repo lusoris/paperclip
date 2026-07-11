@@ -1011,4 +1011,51 @@ describe("IssueDocumentAnnotations", () => {
       });
     }
   });
+
+  it("does not auto-focus the composer after a coarse-pointer selection request", async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: query === "(pointer: coarse)" || query === "(max-width: 767px)",
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+    const focusSpy = vi.spyOn(HTMLTextAreaElement.prototype, "focus").mockImplementation(() => {});
+    mockAnnotationsApi.list.mockResolvedValue([]);
+    const root = createRoot(container);
+    const queryClient = makeQueryClient();
+    const doc = makeDoc();
+
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Harness doc={doc} initialPanelOpen={false} />
+          </QueryClientProvider>,
+        );
+      });
+      await flush();
+      await flush();
+
+      const selectButton = container.querySelector<HTMLButtonElement>('[data-testid="mock-annotation-selection"]');
+      await act(async () => selectButton?.click());
+      await flush();
+
+      expect(container.querySelector('[data-testid="document-annotation-composer"]')).not.toBeNull();
+      expect(focusSpy).not.toHaveBeenCalled();
+    } finally {
+      focusSpy.mockRestore();
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        value: originalMatchMedia,
+      });
+    }
+  });
 });

@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import {
   buildAnchorFromContainerSelection,
   getContainerTextOffset,
+  isCoarsePointerDevice,
   rangesForNormalizedSpan,
 } from "@/lib/document-annotation-selection";
 import {
@@ -66,6 +67,11 @@ export interface AnnotationLayerProps {
 
 /** Synthetic thread id used to render the in-progress (pending) comment highlight. */
 const PENDING_HIGHLIGHT_THREAD_ID = "__paperclip-pending-annotation__";
+const COARSE_SELECTION_SETTLE_MS = 400;
+const COARSE_GESTURE_END_CAPTURE_MS = 120;
+const TOOLBAR_WIDTH = 160;
+const TOOLBAR_HEIGHT = 36;
+const TOOLBAR_VIEWPORT_GAP = 8;
 
 interface HighlightRect {
   threadId: string;
@@ -84,6 +90,14 @@ interface HighlightRect {
 interface ToolbarPosition {
   top: number;
   left: number;
+}
+
+interface SelectionSnapshot {
+  startContainer: Node;
+  startOffset: number;
+  endContainer: Node;
+  endOffset: number;
+  selectedText: string;
 }
 
 type NativeHighlightKind = "open" | "focused" | "stale" | "resolved";
@@ -241,12 +255,16 @@ export function DocumentAnnotationLayer({
   hideResolved = true,
   captureSelectionRequestId,
   pendingHighlightText = null,
+  testWindow,
 }: AnnotationLayerProps) {
   const [highlightRects, setHighlightRects] = useState<HighlightRect[]>([]);
   const [hoveredThreadId, setHoveredThreadId] = useState<string | null>(null);
   const [toolbarPosition, setToolbarPosition] = useState<ToolbarPosition | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const lastCaptureSelectionRequestIdRef = useRef<number>(0);
+  const selectionCaptureTimeoutRef = useRef<number | null>(null);
+  const lastProcessedSelectionRef = useRef<SelectionSnapshot | null>(null);
+  const hasProcessedSelectionRef = useRef(false);
   const reactId = useId();
   const nativeHighlightInstanceId = useMemo(
     () => `document-annotation-${reactId.replace(/[^a-zA-Z0-9_-]/g, "")}`,
@@ -410,7 +428,7 @@ export function DocumentAnnotationLayer({
     };
   }, [computeHighlightRects, containerRef, selectionDebugEnabled]);
 
-  const captureSelection = useCallback((): PendingAnchor | null => {
+  const captureSelection = useCallback((): PendingAnchor | null | undefined => {
     const container = containerRef.current;
     const overlay = overlayRef.current;
     if (!container || !overlay) return null;
@@ -419,23 +437,88 @@ export function DocumentAnnotationLayer({
     const range = selection.getRangeAt(0);
     if (!container.contains(range.commonAncestorContainer)) return null;
     if (selectionTouchesEditableElement(container, range)) return null;
+    const snapshot: SelectionSnapshot = {
+      startContainer: range.startContainer,
+      startOffset: range.startOffset,
+      endContainer: range.endContainer,
+      endOffset: range.endOffset,
+      selectedText: range.toString(),
+    };
+    const previous = lastProcessedSelectionRef.current;
+    if (
+      previous
+      && previous.startContainer === snapshot.startContainer
+      && previous.startOffset === snapshot.startOffset
+      && previous.endContainer === snapshot.endContainer
+      && previous.endOffset === snapshot.endOffset
+      && previous.selectedText === snapshot.selectedText
+    ) {
+      return undefined;
+    }
+    lastProcessedSelectionRef.current = snapshot;
+    hasProcessedSelectionRef.current = true;
     const containerOffset = getContainerTextOffset(container, range);
     if (!containerOffset) return null;
     const anchor = buildAnchorFromContainerSelection({ markdown, containerOffset });
     if (!anchor) return null;
     const overlayRect = overlay.getBoundingClientRect();
     const rect = range.getBoundingClientRect();
-    const top = Math.max(0, rect.top - overlayRect.top - 36);
-    const left = Math.max(0, rect.left - overlayRect.left + rect.width / 2 - 80);
+    const visualViewport = window.visualViewport;
+    const viewportLeft = visualViewport?.offsetLeft ?? 0;
+    const viewportTop = visualViewport?.offsetTop ?? 0;
+    const viewportWidth = visualViewport?.width ?? testWindow?.innerWidth ?? window.innerWidth;
+    const viewportHeight = visualViewport?.height ?? testWindow?.innerHeight ?? window.innerHeight;
+    const preferredTop = rect.top - TOOLBAR_HEIGHT - TOOLBAR_VIEWPORT_GAP;
+    const viewportBottom = viewportTop + viewportHeight;
+    const screenTop = preferredTop < viewportTop + TOOLBAR_VIEWPORT_GAP
+      ? Math.min(rect.bottom + TOOLBAR_VIEWPORT_GAP, viewportBottom - TOOLBAR_HEIGHT - TOOLBAR_VIEWPORT_GAP)
+      : preferredTop;
+    const preferredLeft = rect.left + rect.width / 2 - TOOLBAR_WIDTH / 2;
+    const screenLeft = Math.min(
+      Math.max(preferredLeft, viewportLeft + TOOLBAR_VIEWPORT_GAP),
+      viewportLeft + viewportWidth - TOOLBAR_WIDTH - TOOLBAR_VIEWPORT_GAP,
+    );
+    const top = Math.max(0, screenTop - overlayRect.top);
+    const left = Math.max(0, screenLeft - overlayRect.left);
     setToolbarPosition({ top, left });
     return {
       selector: anchor.selector,
       selectedText: containerOffset.selectedText,
     };
-  }, [containerRef, markdown]);
+  }, [containerRef, markdown, testWindow]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
+    const coarsePointer = isCoarsePointerDevice();
+    const clearSelectionCaptureTimeout = () => {
+      if (selectionCaptureTimeoutRef.current === null) return;
+      window.clearTimeout(selectionCaptureTimeoutRef.current);
+      selectionCaptureTimeoutRef.current = null;
+    };
+    const applySelectionChange = () => {
+      const captureStartedAt = selectionDebugEnabled ? performance.now() : 0;
+      const anchor = captureSelection();
+      if (anchor === undefined) return;
+      if (selectionDebugEnabled) {
+        recordCaptureSelection(performance.now() - captureStartedAt, Boolean(anchor));
+      }
+      if (!anchor) {
+        if (hasProcessedSelectionRef.current && lastProcessedSelectionRef.current === null) return;
+        lastProcessedSelectionRef.current = null;
+        hasProcessedSelectionRef.current = true;
+        onPendingAnchorChange(null);
+        setToolbarPosition(null);
+        return;
+      }
+      onPendingAnchorChange(anchor);
+    };
+    const scheduleSelectionCapture = (delay: number) => {
+      clearSelectionCaptureTimeout();
+      selectionCaptureTimeoutRef.current = window.setTimeout(() => {
+        selectionCaptureTimeoutRef.current = null;
+        applySelectionChange();
+      }, delay);
+    };
     const handleSelectionChange = () => {
       const selection = window.getSelection();
       const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
@@ -443,20 +526,27 @@ export function DocumentAnnotationLayer({
         selection && !selection.isCollapsed && range && containerRef.current?.contains(range.commonAncestorContainer),
       );
       if (selectionDebugEnabled) recordSelectionChange(selectionIsActive);
-      const captureStartedAt = selectionDebugEnabled ? performance.now() : 0;
-      const anchor = captureSelection();
-      if (selectionDebugEnabled) {
-        recordCaptureSelection(performance.now() - captureStartedAt, Boolean(anchor));
-      }
-      if (!anchor) {
-        onPendingAnchorChange(null);
-        setToolbarPosition(null);
+      if (coarsePointer) {
+        scheduleSelectionCapture(COARSE_SELECTION_SETTLE_MS);
         return;
       }
-      onPendingAnchorChange(anchor);
+      applySelectionChange();
+    };
+    const handleGestureEnd = () => {
+      if (selectionCaptureTimeoutRef.current === null) return;
+      scheduleSelectionCapture(COARSE_GESTURE_END_CAPTURE_MS);
     };
     document.addEventListener("selectionchange", handleSelectionChange);
-    return () => document.removeEventListener("selectionchange", handleSelectionChange);
+    if (coarsePointer) {
+      document.addEventListener("pointerup", handleGestureEnd);
+      document.addEventListener("touchend", handleGestureEnd);
+    }
+    return () => {
+      clearSelectionCaptureTimeout();
+      document.removeEventListener("selectionchange", handleSelectionChange);
+      document.removeEventListener("pointerup", handleGestureEnd);
+      document.removeEventListener("touchend", handleGestureEnd);
+    };
   }, [captureSelection, containerRef, onPendingAnchorChange, selectionDebugEnabled]);
 
   useEffect(() => {
@@ -465,11 +555,11 @@ export function DocumentAnnotationLayer({
     if (lastCaptureSelectionRequestIdRef.current === captureSelectionRequestId) return;
     lastCaptureSelectionRequestIdRef.current = captureSelectionRequestId;
     const anchor = captureSelection();
-    if (anchor) {
-      onPendingAnchorChange(anchor);
-      onRequestComment(anchor);
-    }
-  }, [captureSelectionRequestId, captureSelection, onPendingAnchorChange, onRequestComment]);
+    const requestedAnchor = anchor === undefined ? pendingAnchor : anchor;
+    if (!requestedAnchor) return;
+    if (anchor !== undefined) onPendingAnchorChange(anchor);
+    onRequestComment(requestedAnchor);
+  }, [captureSelectionRequestId, captureSelection, onPendingAnchorChange, onRequestComment, pendingAnchor]);
 
   const handleAddComment = () => {
     if (pendingAnchor) onRequestComment(pendingAnchor);

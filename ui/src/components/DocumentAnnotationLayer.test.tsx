@@ -7,10 +7,12 @@ import { DocumentAnnotationLayer } from "./DocumentAnnotationLayer";
 const mockBuildAnchorFromContainerSelection = vi.hoisted(() => vi.fn());
 const mockGetContainerTextOffset = vi.hoisted(() => vi.fn());
 const mockRangesForNormalizedSpan = vi.hoisted(() => vi.fn());
+const mockIsCoarsePointerDevice = vi.hoisted(() => vi.fn(() => false));
 
 vi.mock("@/lib/document-annotation-selection", () => ({
   buildAnchorFromContainerSelection: mockBuildAnchorFromContainerSelection,
   getContainerTextOffset: mockGetContainerTextOffset,
+  isCoarsePointerDevice: mockIsCoarsePointerDevice,
   rangesForNormalizedSpan: mockRangesForNormalizedSpan,
 }));
 
@@ -54,6 +56,7 @@ describe("DocumentAnnotationLayer", () => {
     document.body.appendChild(container);
     mockRangesForNormalizedSpan.mockReturnValue([makeRange([makeRect(8, 12, 80, 18)])]);
     rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(makeRect(0, 0, 400, 300));
+    mockIsCoarsePointerDevice.mockReturnValue(false);
   });
 
   afterEach(async () => {
@@ -296,5 +299,250 @@ describe("DocumentAnnotationLayer", () => {
 
     (globalThis as { CSS?: unknown }).CSS = originalCss;
     (globalThis as { Highlight?: unknown }).Highlight = originalHighlight;
+  });
+
+  it("captures a coarse-pointer selection once after selectionchange settles", async () => {
+    mockIsCoarsePointerDevice.mockReturnValue(true);
+    const body = document.createElement("div");
+    const textNode = document.createTextNode("Select this text.");
+    body.appendChild(textNode);
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 6);
+    range.getBoundingClientRect = () => makeRect(12, 24, 64, 18);
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      rangeCount: 1,
+      isCollapsed: false,
+      getRangeAt: () => range,
+    } as unknown as Selection);
+    mockGetContainerTextOffset.mockReturnValue({
+      startOffset: 0,
+      endOffset: 6,
+      containerText: "Select this text.",
+      selectedText: "Select",
+    });
+    mockBuildAnchorFromContainerSelection.mockReturnValue({
+      selector: {
+        quote: { exact: "Select", prefix: "", suffix: " this" },
+        position: { normalizedStart: 0, normalizedEnd: 6, markdownStart: 0, markdownEnd: 6 },
+      },
+    });
+    const onPendingAnchorChange = vi.fn();
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <DocumentAnnotationLayer
+          containerRef={{ current: body }}
+          markdown="Select this text."
+          threads={[]}
+          focusedThreadId={null}
+          onThreadFocus={vi.fn()}
+          pendingAnchor={null}
+          onPendingAnchorChange={onPendingAnchorChange}
+          onRequestComment={vi.fn()}
+        />,
+      );
+    });
+
+    document.dispatchEvent(new Event("selectionchange"));
+    document.dispatchEvent(new Event("selectionchange"));
+    document.dispatchEvent(new Event("selectionchange"));
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(mockGetContainerTextOffset).not.toHaveBeenCalled();
+    expect(mockBuildAnchorFromContainerSelection).not.toHaveBeenCalled();
+    expect(onPendingAnchorChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    });
+
+    expect(mockGetContainerTextOffset).toHaveBeenCalledTimes(1);
+    expect(mockBuildAnchorFromContainerSelection).toHaveBeenCalledTimes(1);
+    expect(onPendingAnchorChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the short gesture-end delay and skips unchanged settled selections", async () => {
+    mockIsCoarsePointerDevice.mockReturnValue(true);
+    const body = document.createElement("div");
+    const textNode = document.createTextNode("Select this text.");
+    body.appendChild(textNode);
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 6);
+    range.getBoundingClientRect = () => makeRect(12, 24, 64, 18);
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      rangeCount: 1,
+      isCollapsed: false,
+      getRangeAt: () => range,
+    } as unknown as Selection);
+    mockGetContainerTextOffset.mockReturnValue({
+      startOffset: 0,
+      endOffset: 6,
+      containerText: "Select this text.",
+      selectedText: "Select",
+    });
+    mockBuildAnchorFromContainerSelection.mockReturnValue({
+      selector: {
+        quote: { exact: "Select", prefix: "", suffix: " this" },
+        position: { normalizedStart: 0, normalizedEnd: 6, markdownStart: 0, markdownEnd: 6 },
+      },
+    });
+    const onPendingAnchorChange = vi.fn();
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <DocumentAnnotationLayer
+          containerRef={{ current: body }}
+          markdown="Select this text."
+          threads={[]}
+          focusedThreadId={null}
+          onThreadFocus={vi.fn()}
+          pendingAnchor={null}
+          onPendingAnchorChange={onPendingAnchorChange}
+          onRequestComment={vi.fn()}
+        />,
+      );
+    });
+
+    document.dispatchEvent(new Event("selectionchange"));
+    document.dispatchEvent(new Event("pointerup"));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(mockBuildAnchorFromContainerSelection).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    });
+    expect(mockBuildAnchorFromContainerSelection).toHaveBeenCalledTimes(1);
+    expect(onPendingAnchorChange).toHaveBeenCalledTimes(1);
+
+    document.dispatchEvent(new Event("selectionchange"));
+    document.dispatchEvent(new Event("touchend"));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 140));
+    });
+
+    expect(mockGetContainerTextOffset).toHaveBeenCalledTimes(1);
+    expect(mockBuildAnchorFromContainerSelection).toHaveBeenCalledTimes(1);
+    expect(onPendingAnchorChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("places a near-top selection toolbar below the selection and within the viewport", async () => {
+    const body = document.createElement("div");
+    const textNode = document.createTextNode("Select this text.");
+    body.appendChild(textNode);
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 6);
+    range.getBoundingClientRect = () => makeRect(-40, 2, 40, 18);
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      rangeCount: 1,
+      isCollapsed: false,
+      getRangeAt: () => range,
+    } as unknown as Selection);
+    mockGetContainerTextOffset.mockReturnValue({
+      startOffset: 0,
+      endOffset: 6,
+      containerText: "Select this text.",
+      selectedText: "Select",
+    });
+    mockBuildAnchorFromContainerSelection.mockReturnValue({
+      selector: {
+        quote: { exact: "Select", prefix: "", suffix: " this" },
+        position: { normalizedStart: 0, normalizedEnd: 6, markdownStart: 0, markdownEnd: 6 },
+      },
+    });
+    root = createRoot(container);
+    let capturedAnchor: React.ComponentProps<typeof DocumentAnnotationLayer>["pendingAnchor"] = null;
+    const renderLayer = () => (
+      <DocumentAnnotationLayer
+        containerRef={{ current: body }}
+        markdown="Select this text."
+        threads={[]}
+        focusedThreadId={null}
+        onThreadFocus={vi.fn()}
+        pendingAnchor={capturedAnchor}
+        onPendingAnchorChange={(anchor) => {
+          capturedAnchor = anchor;
+        }}
+        onRequestComment={vi.fn()}
+        testWindow={{ innerWidth: 320, innerHeight: 640 }}
+      />
+    );
+
+    await act(async () => {
+      root?.render(renderLayer());
+    });
+    await act(async () => {
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await act(async () => {
+      root?.render(renderLayer());
+    });
+
+    const toolbar = container.querySelector<HTMLElement>('[data-testid="document-annotation-selection-toolbar"]');
+    expect(toolbar?.style.top).toBe("28px");
+    expect(toolbar?.style.left).toBe("8px");
+  });
+
+  it("uses the settled pending anchor for an explicit shortcut request", async () => {
+    const body = document.createElement("div");
+    const textNode = document.createTextNode("Select this text.");
+    body.appendChild(textNode);
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 6);
+    range.getBoundingClientRect = () => makeRect(12, 24, 64, 18);
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      rangeCount: 1,
+      isCollapsed: false,
+      getRangeAt: () => range,
+    } as unknown as Selection);
+    mockGetContainerTextOffset.mockReturnValue({
+      startOffset: 0,
+      endOffset: 6,
+      containerText: "Select this text.",
+      selectedText: "Select",
+    });
+    mockBuildAnchorFromContainerSelection.mockReturnValue({
+      selector: {
+        quote: { exact: "Select", prefix: "", suffix: " this" },
+        position: { normalizedStart: 0, normalizedEnd: 6, markdownStart: 0, markdownEnd: 6 },
+      },
+    });
+    const onRequestComment = vi.fn();
+    let pendingAnchor: React.ComponentProps<typeof DocumentAnnotationLayer>["pendingAnchor"] = null;
+    root = createRoot(container);
+    const renderLayer = (captureSelectionRequestId: number) => (
+      <DocumentAnnotationLayer
+        containerRef={{ current: body }}
+        markdown="Select this text."
+        threads={[]}
+        focusedThreadId={null}
+        onThreadFocus={vi.fn()}
+        pendingAnchor={pendingAnchor}
+        onPendingAnchorChange={(anchor) => {
+          pendingAnchor = anchor;
+        }}
+        onRequestComment={onRequestComment}
+        captureSelectionRequestId={captureSelectionRequestId}
+      />
+    );
+
+    await act(async () => {
+      root?.render(renderLayer(0));
+    });
+    await act(async () => {
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await act(async () => {
+      root?.render(renderLayer(1));
+    });
+
+    expect(mockBuildAnchorFromContainerSelection).toHaveBeenCalledTimes(1);
+    expect(onRequestComment).toHaveBeenCalledTimes(1);
+    expect(onRequestComment).toHaveBeenCalledWith(pendingAnchor);
   });
 });
